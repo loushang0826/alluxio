@@ -16,12 +16,12 @@ import static org.junit.Assert.assertTrue;
 
 import alluxio.conf.ServerConfiguration;
 import alluxio.conf.PropertyKey;
-import alluxio.cli.ConfigurationDocGenerator;
+import alluxio.cli.docgen.ConfigurationDocGenerator;
 import alluxio.collections.Pair;
 import alluxio.util.io.PathUtils;
 
 import com.google.common.base.Joiner;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -40,7 +40,7 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * Tests for {@link alluxio.cli.ConfigurationDocGenerator}.
+ * Tests for {@link ConfigurationDocGenerator}.
  */
 @RunWith(Parameterized.class)
 public class ConfigurationDocGeneratorTest {

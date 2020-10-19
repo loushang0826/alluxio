@@ -42,6 +42,7 @@ import java.net.UnknownHostException;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
@@ -54,6 +55,7 @@ public final class NetworkAddressUtils {
   private static final Logger LOG = LoggerFactory.getLogger(NetworkAddressUtils.class);
 
   public static final String WILDCARD_ADDRESS = "0.0.0.0";
+  public static final String UNKNOWN_HOSTNAME = "<UNKNOWN>";
 
   /**
    * Checks if the underlying OS is Windows.
@@ -236,7 +238,8 @@ public final class NetworkAddressUtils {
    */
   public static InetSocketAddress getConnectAddress(ServiceType service,
       AlluxioConfiguration conf) {
-    return new InetSocketAddress(getConnectHost(service, conf), getPort(service, conf));
+    return InetSocketAddress.createUnresolved(getConnectHost(service, conf),
+        getPort(service, conf));
   }
 
   /**
@@ -604,7 +607,7 @@ public final class NetworkAddressUtils {
     if (strArr.length != 2) {
       throw new IOException("Invalid InetSocketAddress " + address);
     }
-    return new InetSocketAddress(strArr[0], Integer.parseInt(strArr[1]));
+    return InetSocketAddress.createUnresolved(strArr[0], Integer.parseInt(strArr[1]));
   }
 
   /**
@@ -633,6 +636,14 @@ public final class NetworkAddressUtils {
       address = new DomainSocketAddress(netAddress.getDomainSocketPath());
     } else {
       String host = netAddress.getHost();
+      // ALLUXIO-11172: If the worker is in a container, use the container hostname
+      // to establish the connection.
+      if (!netAddress.getContainerHost().equals("")) {
+        LOG.debug("Worker is in a container. Use container host {} instead of physical host {}",
+                netAddress.getContainerHost(), host);
+        host = netAddress.getContainerHost();
+      }
+
       int port = netAddress.getDataPort();
       address = new InetSocketAddress(host, port);
     }
@@ -655,12 +666,14 @@ public final class NetworkAddressUtils {
       throws AlluxioStatusException {
     Preconditions.checkNotNull(address, "address");
     Preconditions.checkNotNull(serviceType, "serviceType");
-    GrpcChannel channel =
-        GrpcChannelBuilder.newBuilder(new GrpcServerAddress(address), conf).disableAuthentication()
-            .setSubject(userState.getSubject()).build();
+    GrpcChannel channel = GrpcChannelBuilder.newBuilder(GrpcServerAddress.create(address), conf)
+        .setClientType("PingService").disableAuthentication().setSubject(userState.getSubject())
+        .build();
     try {
       ServiceVersionClientServiceGrpc.ServiceVersionClientServiceBlockingStub versionClient =
-          ServiceVersionClientServiceGrpc.newBlockingStub(channel);
+          ServiceVersionClientServiceGrpc.newBlockingStub(channel)
+              .withDeadlineAfter(conf.getMs(PropertyKey.USER_MASTER_POLLING_TIMEOUT),
+                  TimeUnit.MILLISECONDS);
       versionClient.getServiceVersion(
           GetServiceVersionPRequest.newBuilder().setServiceType(serviceType).build());
     } catch (Throwable t) {

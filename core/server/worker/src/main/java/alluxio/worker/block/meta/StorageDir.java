@@ -16,6 +16,7 @@ import alluxio.conf.ServerConfiguration;
 import alluxio.exception.BlockAlreadyExistsException;
 import alluxio.exception.BlockDoesNotExistException;
 import alluxio.exception.ExceptionMessage;
+import alluxio.exception.InvalidPathException;
 import alluxio.exception.InvalidWorkerStateException;
 import alluxio.exception.WorkerOutOfSpaceException;
 import alluxio.util.io.FileUtils;
@@ -29,6 +30,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.concurrent.NotThreadSafe;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -40,6 +42,11 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Represents a directory in a storage tier. It has a fixed capacity allocated to it on
  * instantiation. It contains the set of blocks currently in the storage directory.
+ *
+ * Portion of capacity will be accounted as reserved space.
+ * Through {@link StorageDirView}, this space will be reflected as:
+ * - committed for user I/Os
+ * - available for internal I/Os.
  */
 @NotThreadSafe
 public final class StorageDir {
@@ -55,16 +62,18 @@ public final class StorageDir {
   private Map<Long, Set<Long>> mSessionIdToTempBlockIdsMap;
   private AtomicLong mAvailableBytes;
   private AtomicLong mCommittedBytes;
+  private AtomicLong mReservedBytes;
   private String mDirPath;
   private int mDirIndex;
   private StorageTier mTier;
 
-  private StorageDir(StorageTier tier, int dirIndex, long capacityBytes, String dirPath,
-      String dirMedium) {
+  private StorageDir(StorageTier tier, int dirIndex, long capacityBytes, long reservedBytes,
+      String dirPath, String dirMedium) {
     mTier = Preconditions.checkNotNull(tier, "tier");
     mDirIndex = dirIndex;
     mCapacityBytes = capacityBytes;
-    mAvailableBytes = new AtomicLong(capacityBytes);
+    mReservedBytes = new AtomicLong(reservedBytes);
+    mAvailableBytes = new AtomicLong(capacityBytes - reservedBytes);
     mCommittedBytes = new AtomicLong(0);
     mDirPath = dirPath;
     mDirMedium = dirMedium;
@@ -84,6 +93,7 @@ public final class StorageDir {
    * @param tier the {@link StorageTier} this dir belongs to
    * @param dirIndex the index of this dir in its tier
    * @param capacityBytes the initial capacity of this dir, can not be modified later
+   * @param reservedBytes the amount of reserved space for internal management
    * @param dirPath filesystem path of this dir for actual storage
    * @param dirMedium the medium type of the storage dir
    * @return the new created {@link StorageDir}
@@ -91,9 +101,11 @@ public final class StorageDir {
    * @throws WorkerOutOfSpaceException when metadata can not be added due to limited left space
    */
   public static StorageDir newStorageDir(StorageTier tier, int dirIndex, long capacityBytes,
-      String dirPath, String dirMedium)
-      throws BlockAlreadyExistsException, IOException, WorkerOutOfSpaceException {
-    StorageDir dir = new StorageDir(tier, dirIndex, capacityBytes, dirPath, dirMedium);
+      long reservedBytes, String dirPath, String dirMedium)
+      throws BlockAlreadyExistsException, IOException, WorkerOutOfSpaceException,
+      InvalidPathException {
+    StorageDir dir =
+        new StorageDir(tier, dirIndex, capacityBytes, reservedBytes, dirPath, dirMedium);
     dir.initializeMeta();
     return dir;
   }
@@ -109,11 +121,12 @@ public final class StorageDir {
    * @throws WorkerOutOfSpaceException when metadata can not be added due to limited left space
    */
   private void initializeMeta() throws BlockAlreadyExistsException, IOException,
-      WorkerOutOfSpaceException {
+      WorkerOutOfSpaceException, InvalidPathException {
     // Create the storage directory path
     boolean isDirectoryNewlyCreated = FileUtils.createStorageDirPath(mDirPath,
         ServerConfiguration.get(PropertyKey.WORKER_DATA_FOLDER_PERMISSIONS));
-
+    String tmpDir = Paths.get(ServerConfiguration.get(PropertyKey.WORKER_DATA_TMP_FOLDER))
+        .getName(0).toString();
     if (isDirectoryNewlyCreated) {
       LOG.info("Folder {} was created!", mDirPath);
     }
@@ -125,7 +138,9 @@ public final class StorageDir {
     }
     for (File path : paths) {
       if (!path.isFile()) {
-        LOG.error("{} in StorageDir is not a file", path.getAbsolutePath());
+        if (!path.getName().equals(tmpDir)) {
+          LOG.error("{} in StorageDir is not a file", path.getAbsolutePath());
+        }
         try {
           // TODO(calvin): Resolve this conflict in class names.
           org.apache.commons.io.FileUtils.deleteDirectory(path);
@@ -287,7 +302,7 @@ public final class StorageDir {
     long blockId = blockMeta.getBlockId();
     long blockSize = blockMeta.getBlockSize();
 
-    if (getAvailableBytes() < blockSize) {
+    if (getAvailableBytes() + getReservedBytes() < blockSize) {
       throw new WorkerOutOfSpaceException(ExceptionMessage.NO_SPACE_FOR_BLOCK_META, blockId,
           blockSize, getAvailableBytes(), blockMeta.getBlockLocation().tierAlias());
     }
@@ -313,7 +328,7 @@ public final class StorageDir {
     long blockId = tempBlockMeta.getBlockId();
     long blockSize = tempBlockMeta.getBlockSize();
 
-    if (getAvailableBytes() < blockSize) {
+    if (getAvailableBytes() + getReservedBytes() < blockSize) {
       throw new WorkerOutOfSpaceException(ExceptionMessage.NO_SPACE_FOR_BLOCK_META, blockId,
           blockSize, getAvailableBytes(), tempBlockMeta.getBlockLocation().tierAlias());
     }
@@ -455,6 +470,13 @@ public final class StorageDir {
     return new BlockStoreLocation(mTier.getTierAlias(), mDirIndex, mDirMedium);
   }
 
+  /**
+   * @return amount of reserved bytes for this dir
+   */
+  public long getReservedBytes() {
+    return mReservedBytes.get();
+  }
+
   private void reclaimSpace(long size, boolean committed) {
     Preconditions.checkState(mCapacityBytes >= mAvailableBytes.get() + size,
         "Available bytes should always be less than total capacity bytes");
@@ -465,9 +487,9 @@ public final class StorageDir {
   }
 
   private void reserveSpace(long size, boolean committed) {
-    Preconditions.checkState(size <= mAvailableBytes.get(),
+    Preconditions.checkState(size <= mAvailableBytes.get() + mReservedBytes.get(),
         "Available bytes should always be non-negative");
-    mAvailableBytes.addAndGet(-size);
+    mAvailableBytes.getAndSet(Math.max(0, mAvailableBytes.get() - size));
     if (committed) {
       mCommittedBytes.addAndGet(size);
     }

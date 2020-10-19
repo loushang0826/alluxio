@@ -93,11 +93,9 @@ public abstract class MasterProcess implements Process {
           String.format("%s port must be nonzero in single-master mode", service));
     }
     if (port == 0) {
-      try {
-        ServerSocket s = new ServerSocket(0);
+      try (ServerSocket s = new ServerSocket(0)) {
         s.setReuseAddress(true);
         conf.set(service.getPortKey(), s.getLocalPort());
-        s.close();
       } catch (IOException e) {
         throw new RuntimeException(e);
       }
@@ -175,10 +173,14 @@ public abstract class MasterProcess implements Process {
   }
 
   protected void startRejectingServers() {
-    mRejectingRpcServer = new RejectingServer(mRpcBindAddress.getPort());
-    mRejectingRpcServer.start();
-    mRejectingWebServer = new RejectingServer(mWebBindAddress.getPort());
-    mRejectingWebServer.start();
+    if (mRejectingRpcServer == null) {
+      mRejectingRpcServer = new RejectingServer(mRpcBindAddress);
+      mRejectingRpcServer.start();
+    }
+    if (mRejectingWebServer == null) {
+      mRejectingWebServer = new RejectingServer(mWebBindAddress);
+      mRejectingWebServer.start();
+    }
   }
 
   protected void stopRejectingRpcServer() {

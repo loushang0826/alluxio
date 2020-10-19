@@ -1,3 +1,14 @@
+#
+# The Alluxio Open Foundation licenses this work under the Apache License, version 2.0
+# (the "License"). You may not use this work except in compliance with the License, which is
+# available at www.apache.org/licenses/LICENSE-2.0
+#
+# This software is distributed on an "AS IS" basis, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied, as more fully set forth in the License.
+#
+# See the NOTICE file distributed with this work for information regarding copyright ownership.
+#
+
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
@@ -202,8 +213,11 @@ class Hadoop
   end
 
   def alluxio_dist(alluxio_version)
-    hadoop_major_minor_version = @version.split('.')[0..1].join('.')
-    return "alluxio-#{alluxio_version}-hadoop-#{hadoop_major_minor_version}-bin.tar.gz"
+    if alluxio_version.start_with?("1")
+      hadoop_major_minor_version = @version.split('.')[0..1].join('.')
+      return "alluxio-#{alluxio_version}-hadoop-#{hadoop_major_minor_version}-bin.tar.gz"
+    end
+    return "alluxio-#{alluxio_version}-bin.tar.gz"
   end
 end
 

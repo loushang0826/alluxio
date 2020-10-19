@@ -11,11 +11,13 @@
 
 package alluxio;
 
+import alluxio.annotation.PublicApi;
 import alluxio.conf.AlluxioConfiguration;
 import alluxio.conf.InstancedConfiguration;
 import alluxio.conf.path.PathConfiguration;
 import alluxio.exception.status.AlluxioStatusException;
 import alluxio.grpc.GetConfigurationPResponse;
+import alluxio.grpc.Scope;
 import alluxio.security.user.UserState;
 import alluxio.util.ConfigurationUtils;
 
@@ -41,6 +43,7 @@ import javax.security.auth.Subject;
  * Ideally only a single {@link ClientContext} should be needed when initializing an application.
  * This will use as few network resources as possible.
  */
+@PublicApi
 public class ClientContext {
   private volatile AlluxioConfiguration mClusterConf;
   private volatile String mClusterConfHash;
@@ -48,6 +51,7 @@ public class ClientContext {
   private volatile UserState mUserState;
   private volatile String mPathConfHash;
   private volatile boolean mIsPathConfLoaded = false;
+  private volatile boolean mUriValidationEnabled = true;
 
   /**
    * A client context with information about the subject and configuration of the client.
@@ -86,6 +90,7 @@ public class ClientContext {
     mUserState = ctx.getUserState();
     mClusterConfHash = ctx.getClusterConfHash();
     mPathConfHash = ctx.getPathConfHash();
+    mUriValidationEnabled = ctx.getUriValidationEnabled();
   }
 
   private ClientContext(@Nullable Subject subject, @Nullable AlluxioConfiguration alluxioConf) {
@@ -129,7 +134,7 @@ public class ClientContext {
     GetConfigurationPResponse response = ConfigurationUtils.loadConfiguration(address,
         conf, !loadClusterConf, !loadPathConf);
     if (loadClusterConf) {
-      mClusterConf = ConfigurationUtils.getClusterConf(response, conf);
+      mClusterConf = ConfigurationUtils.getClusterConf(response, conf, Scope.CLIENT);
       mClusterConfHash = response.getClusterConfigHash();
     }
     if (loadPathConf) {
@@ -149,6 +154,22 @@ public class ClientContext {
       throws AlluxioStatusException {
     loadConf(address, !mClusterConf.clusterDefaultsLoaded(), !mIsPathConfLoaded);
     mUserState = UserState.Factory.create(mClusterConf, mUserState.getSubject());
+  }
+
+  /**
+   * @param uriValidationEnabled whether URI validation is enabled
+   * @return updated instance of ClientContext
+   */
+  public ClientContext setUriValidationEnabled(boolean uriValidationEnabled) {
+    mUriValidationEnabled = uriValidationEnabled;
+    return this;
+  }
+
+  /**
+   * @return {@code true} if URI validation is enabled
+   */
+  public boolean getUriValidationEnabled() {
+    return mUriValidationEnabled;
   }
 
   /**

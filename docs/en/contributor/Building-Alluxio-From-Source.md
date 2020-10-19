@@ -29,32 +29,28 @@ $ cd alluxio
 By default, cloning the repository will check out the master branch. If you are looking to build a
 particular version of the code you may check out the version using a git tag.
 
-For example to checkout the source for version v{{site.ALLUXIO_RELEASED_VERSION}}, run:
-
-```console
-$ git checkout v{{site.ALLUXIO_RELEASED_VERSION}}
-```
-
-To view a list of all possible versions you can run
-
 ```console
 $ git tag
+$ git checkout <TAG_NAME>
 ```
 
 ## Build
 
 Build the source code using Maven:
 
-```java
-mvn clean install -DskipTests
+```console
+$ mvn clean install -DskipTests
 ```
 
 To speed up the compilation, you can run the following instruction to skip different checks:
 
 ```console
 $ mvn -T 2C clean install -DskipTests -Dmaven.javadoc.skip -Dfindbugs.skip \
-  -Dcheckstyle.skip -Dlicense.skip
+  -Dcheckstyle.skip -Dlicense.skip -Dskip.protoc
 ```
+
+> Note: The flag `-Dskip.protoc` skips generating source files related to gRPC proto.
+You can skip this step if you have already built them.
 
 If you are seeing `java.lang.OutOfMemoryError: Java heap space`, please set the following
 variable to increase the memory heap size for maven:
@@ -72,6 +68,8 @@ all the dependencies. Subsequent builds, however, will be much faster.
 Once Alluxio is built, you can validate and start it with:
 
 ```console
+$ # Alluxio uses ./underFSStorage for under file system storage by default
+$ mkdir ./underFSStorage 
 $ ./bin/alluxio validateEnv local
 $ ./bin/alluxio format
 $ ./bin/alluxio-start.sh local SudoMount
@@ -142,20 +140,9 @@ To build against Cloudera's releases, just use a version like `$apacheRelease-cd
 -Phadoop-2 -Dhadoop.version=2.0.0-cdh4.7.0
 ```
 
-#### MapR
-
-To build against a MapR release
-
-```properties
--Phadoop-2 -Dhadoop.version=2.7.0-mapr-1607
--Phadoop-2 -Dhadoop.version=2.7.0-mapr-1602
--Phadoop-2 -Dhadoop.version=2.7.0-mapr-1506
--Phadoop-2 -Dhadoop.version=2.3.0-mapr-4.0.0-FCS
-```
-
 #### Hortonworks
 
-To build against a Hortonworks release, just use a version like `$apacheRelease.$hortonRelease`
+To build against a Hortonworks release, just use a version like `$apacheRelease.$hortonworksRelease`
 
 ```properties
 -Phadoop-2 -Dhadoop.version=2.1.0.2.0.5.0-67

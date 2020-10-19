@@ -67,7 +67,7 @@ public class BlockInStreamTest {
     when(workerClient.openLocalBlock(any(StreamObserver.class)))
         .thenAnswer(new Answer() {
           public Object answer(InvocationOnMock invocation) {
-            mResponseObserver = invocation.getArgumentAt(0, StreamObserver.class);
+            mResponseObserver = invocation.getArgument(0, StreamObserver.class);
             return requestObserver;
           }
         });
@@ -78,12 +78,9 @@ public class BlockInStreamTest {
     }).when(requestObserver).onNext(any(OpenLocalBlockRequest.class));
     mMockContext = PowerMockito.mock(FileSystemContext.class);
     PowerMockito.when(mMockContext.acquireBlockWorkerClient(Matchers.any(WorkerNetAddress.class)))
-        .thenReturn(workerClient);
+        .thenReturn(new NoopClosableResource<>(workerClient));
     PowerMockito.when(mMockContext.getClientContext()).thenReturn(ClientContext.create(mConf));
     PowerMockito.when(mMockContext.getClusterConf()).thenReturn(mConf);
-    PowerMockito.doNothing().when(mMockContext)
-        .releaseBlockWorkerClient(Matchers.any(WorkerNetAddress.class),
-            Matchers.any(BlockWorkerClient.class));
     mInfo = new BlockInfo().setBlockId(1);
     mOptions = new InStreamOptions(new URIStatus(new FileInfo().setBlockIds(Collections
         .singletonList(1L))), mConf);

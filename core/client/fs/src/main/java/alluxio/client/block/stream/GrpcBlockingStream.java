@@ -16,6 +16,7 @@ import alluxio.exception.status.CancelledException;
 import alluxio.exception.status.DeadlineExceededException;
 import alluxio.exception.status.UnavailableException;
 import alluxio.resource.LockResource;
+import alluxio.util.LogUtils;
 
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -92,8 +93,9 @@ public class GrpcBlockingStream<ReqT, ResT> {
    */
   public void send(ReqT request, long timeoutMs) throws IOException {
     if (mClosed || mCanceled || mClosedFromRemote) {
-      throw new CancelledException(formatErrorMessage(
-          "Failed to send request %s: stream is already closed or canceled.", request));
+      throw new CancelledException(
+          formatErrorMessage("Failed to send request %s: stream is already closed or cancelled.",
+              LogUtils.truncateMessageLineLength(request)));
     }
     try (LockResource lr = new LockResource(mLock)) {
       while (true) {
@@ -104,12 +106,14 @@ public class GrpcBlockingStream<ReqT, ResT> {
         try {
           if (!mReadyOrFailed.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             throw new DeadlineExceededException(
-                formatErrorMessage("Timeout sending request %s after %dms.", request, timeoutMs));
+                formatErrorMessage("Timeout sending request %s after %dms.",
+                    LogUtils.truncateMessageLineLength(request), timeoutMs));
           }
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
-          throw new CancelledException(formatErrorMessage(
-              "Failed to send request %s: interrupted while waiting for server.", request), e);
+          throw new CancelledException(
+              formatErrorMessage("Failed to send request %s: interrupted while waiting for server.",
+                  LogUtils.truncateMessageLineLength(request)), e);
         }
       }
     }
@@ -117,15 +121,19 @@ public class GrpcBlockingStream<ReqT, ResT> {
   }
 
   /**
-   * Sends a request. Will not wait for the stream to be ready.
+   * Sends a request. Will not wait for the stream to be ready. If the stream is closed or cancelled
+   * this method will return without an error.
    *
    * @param request the request
    * @throws IOException if any error occurs
    */
   public void send(ReqT request) throws IOException {
     if (mClosed || mCanceled || mClosedFromRemote) {
-      throw new CancelledException(formatErrorMessage(
-          "Failed to send request %s: stream is already closed or canceled.", request));
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Failed to send request {}: stream is already closed or cancelled. ({})",
+            LogUtils.truncateMessageLineLength(request), mDescription);
+      }
+      return;
     }
     try (LockResource lr = new LockResource(mLock)) {
       checkError();
@@ -152,8 +160,10 @@ public class GrpcBlockingStream<ReqT, ResT> {
     try {
       Object response = mResponses.poll(timeoutMs, TimeUnit.MILLISECONDS);
       if (response == null) {
-        throw new DeadlineExceededException(
+        checkError(); // The stream could have errored while we were waiting
+        DeadlineExceededException e = new DeadlineExceededException(
             formatErrorMessage("Timeout waiting for response after %dms.", timeoutMs));
+        throw e;
       }
       if (response == mResponseObserver) {
         mCompleted = true;
@@ -169,7 +179,8 @@ public class GrpcBlockingStream<ReqT, ResT> {
   }
 
   /**
-   * Closes the outbound stream.
+   * Closes the outbound stream. If the stream is already closed then invoking this method has no
+   * effect.
    */
   public void close() {
     if (isOpen()) {
@@ -180,7 +191,8 @@ public class GrpcBlockingStream<ReqT, ResT> {
   }
 
   /**
-   * Cancels the stream.
+   * Cancels the stream. If the stream is already cancelled then invoking this method has no
+   * effect.
    */
   public void cancel() {
     if (isOpen()) {

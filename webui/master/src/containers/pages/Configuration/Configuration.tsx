@@ -9,23 +9,21 @@
  * See the NOTICE file distributed with this work for information regarding copyright ownership.
  */
 
-import {AxiosResponse} from 'axios';
 import React from 'react';
-import {connect} from 'react-redux';
-import {Alert, Table} from 'reactstrap';
-import {Dispatch} from 'redux';
+import { connect } from 'react-redux';
+import { Table } from 'reactstrap';
+import { AnyAction, compose, Dispatch } from 'redux';
 
-import {LoadingMessage} from '@alluxio/common-ui/src/components';
-import {IConfigTriple} from '../../../constants';
-import {IApplicationState} from '../../../store';
-import {fetchRequest} from '../../../store/config/actions';
-import {IConfig} from '../../../store/config/types';
+import { withErrors, withLoadingMessage, withFetchData } from '@alluxio/common-ui/src/components';
+import { IConfigTriple } from '../../../constants';
+import { IApplicationState } from '../../../store';
+import { fetchRequest } from '../../../store/config/actions';
+import { IConfig } from '../../../store/config/types';
+import { IAlertErrors, ICommonState } from '@alluxio/common-ui/src/constants';
+import { createAlertErrors } from '@alluxio/common-ui/src/utilities';
 
-interface IPropsFromState {
+interface IPropsFromState extends ICommonState {
   data: IConfig;
-  errors?: AxiosResponse;
-  loading: boolean;
-  refresh: boolean;
 }
 
 interface IPropsFromDispatch {
@@ -34,35 +32,9 @@ interface IPropsFromDispatch {
 
 export type AllProps = IPropsFromState & IPropsFromDispatch;
 
-export class Configuration extends React.Component<AllProps> {
-  public componentDidUpdate(prevProps: AllProps) {
-    if (this.props.refresh !== prevProps.refresh) {
-      this.props.fetchRequest();
-    }
-  }
-
-  public componentWillMount() {
-    this.props.fetchRequest();
-  }
-
-  public render() {
-    const {errors, data, loading} = this.props;
-
-    if (errors) {
-      return (
-        <Alert color="danger">
-          Unable to reach the api endpoint for this page.
-        </Alert>
-      );
-    }
-
-    if (loading) {
-      return (
-        <div className="configuration-page">
-          <LoadingMessage/>
-        </div>
-      );
-    }
+export class ConfigurationPresenter extends React.Component<AllProps> {
+  public render(): JSX.Element {
+    const { data } = this.props;
 
     return (
       <div className="configuration-page">
@@ -72,22 +44,24 @@ export class Configuration extends React.Component<AllProps> {
               <h5>Alluxio Configuration</h5>
               <Table hover={true}>
                 <thead>
-                <tr>
-                  <th>Property</th>
-                  <th>Value</th>
-                  <th>Source</th>
-                </tr>
+                  <tr>
+                    <th>Property</th>
+                    <th>Value</th>
+                    <th>Source</th>
+                  </tr>
                 </thead>
                 <tbody>
-                {data.configuration.map((configuration: IConfigTriple) => (
-                  <tr key={configuration.left}>
-                    <td>
-                      <pre className="mb-0"><code>{configuration.left}</code></pre>
-                    </td>
-                    <td>{configuration.middle}</td>
-                    <td>{configuration.right}</td>
-                  </tr>
-                ))}
+                  {data.configuration.map((configuration: IConfigTriple) => (
+                    <tr key={configuration.left}>
+                      <td>
+                        <pre className="mb-0">
+                          <code>{configuration.left}</code>
+                        </pre>
+                      </td>
+                      <td>{configuration.middle}</td>
+                      <td>{configuration.right}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </Table>
             </div>
@@ -95,11 +69,11 @@ export class Configuration extends React.Component<AllProps> {
               <h5>Whitelist</h5>
               <Table hover={true}>
                 <tbody>
-                {data.whitelist.map((whitelist: string) => (
-                  <tr key={whitelist}>
-                    <td>{whitelist}</td>
-                  </tr>
-                ))}
+                  {data.whitelist.map((whitelist: string) => (
+                    <tr key={whitelist}>
+                      <td>{whitelist}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </Table>
             </div>
@@ -110,19 +84,27 @@ export class Configuration extends React.Component<AllProps> {
   }
 }
 
-const mapStateToProps = ({config, refresh}: IApplicationState) => ({
-  data: config.data,
-  errors: config.errors,
-  loading: config.loading,
-  refresh: refresh.data
+const mapStateToProps = ({ config, refresh }: IApplicationState): IPropsFromState => {
+  const errors: IAlertErrors = createAlertErrors(config.errors !== undefined, []);
+  return {
+    data: config.data,
+    errors: errors,
+    loading: config.loading,
+    refresh: refresh.data,
+    class: 'configuration-page',
+  };
+};
 
+const mapDispatchToProps = (dispatch: Dispatch): { fetchRequest: () => AnyAction } => ({
+  fetchRequest: (): AnyAction => dispatch(fetchRequest()),
 });
 
-const mapDispatchToProps = (dispatch: Dispatch) => ({
-  fetchRequest: () => dispatch(fetchRequest())
-});
-
-export default connect(
-  mapStateToProps,
-  mapDispatchToProps
-)(Configuration);
+export default compose(
+  connect(
+    mapStateToProps,
+    mapDispatchToProps,
+  ),
+  withFetchData,
+  withErrors,
+  withLoadingMessage,
+)(ConfigurationPresenter) as typeof React.Component;

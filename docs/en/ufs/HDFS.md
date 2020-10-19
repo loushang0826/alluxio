@@ -2,7 +2,7 @@
 layout: global
 title: HDFS
 nickname: HDFS
-group: Under Stores
+group: Storage Integrations
 priority: 1
 ---
 
@@ -23,7 +23,7 @@ with the correct Hadoop version (recommended), or
 (for advanced users).
 
 Note that, when building Alluxio from source code, by default Alluxio server binaries is built to
-work with Apache Hadoop HDFS of version `2.2.0`. To work with Hadoop distributions of other
+work with Apache Hadoop HDFS of version `3.3.0`. To work with Hadoop distributions of other
 versions, one needs to specify the correct Hadoop profile and run the following in your Alluxio
 directory:
 
@@ -31,15 +31,15 @@ directory:
 $ mvn install -P<YOUR_HADOOP_PROFILE> -D<HADOOP_VERSION> -DskipTests
 ```
 
-Alluxio provides predefined build profiles including `hadoop-1`, `hadoop-2` (enabled by default),
-`hadoop-3` for the major Hadoop versions 1.x, 2.x and 3.x. If you want to build Alluxio with a specific
-Hadoop release version, you can also specify the version in the command. For example,
+Alluxio provides predefined build profiles for `hadoop-2` and `hadoop-3` (enabled by default) for the major Hadoop versions 2.x and 3.x.
+If you want to build Alluxio with a specific Hadoop release version, you can also specify the version in the command. 
+For example,
 
 ```console
 # Build Alluxio for the Apache Hadoop version Hadoop 2.7.1
 $ mvn install -Phadoop-2 -Dhadoop.version=2.7.1 -DskipTests
-# Build Alluxio for the Apache Hadoop version Hadoop 2.7.1
-$ mvn install -Phadoop-3 -Dhadoop.version=3.0.0 -DskipTests
+# Build Alluxio for the Apache Hadoop version Hadoop 3.1.0
+$ mvn install -Phadoop-3 -Dhadoop.version=3.1.0 -DskipTests
 ```
 
 Please visit the
@@ -47,7 +47,7 @@ Please visit the
 page for more information about support for other distributions.
 
 If everything succeeds, you should see
-`alluxio-assembly-server-{{site.ALLUXIO_RELEASED_VERSION}}-jar-with-dependencies.jar` created in
+`alluxio-assembly-server-{{site.ALLUXIO_VERSION_STRING}}-jar-with-dependencies.jar` created in
 the `${ALLUXIO_HOME}/assembly/server/target` directory.
 
 ## Basic Setup
@@ -151,7 +151,7 @@ alluxio.master.mount.table.root.ufs=hdfs://nameservice/
 
 ### User/Permission Mapping
 
-Alluxio supports POSIX-like filesystem [user and permission checking]({{ '/en/advanced/Security.html' | relativize_url }}).
+Alluxio supports POSIX-like filesystem [user and permission checking]({{ '/en/operation/Security.html' | relativize_url }}).
 To ensure that the permission information of files/directories including user, group and mode in
 HDFS is consistent with Alluxio (e.g., a file created by user Foo in Alluxio is persisted to
 HDFS also with owner as user Foo), the user to start Alluxio master and worker processes
@@ -211,7 +211,8 @@ There are multiple ways for a user to mount an HDFS cluster with a specified ver
 Before mounting HDFS with a specific version, make sure you have built a client with that specific version of HDFS.
 You can check the existence of this client by going to the `lib` directory under the Alluxio directory.
 
-If you have built Alluxio from source, you can build additional client jar files by running `mvn` command under the `underfs` directory in the Alluxio source tree. For example, issuing the following command would build the client jar for the 2.8.0 version.
+If you have built Alluxio from source, you can build additional client jar files by running `mvn` command under the `underfs` directory in the Alluxio source tree. 
+For example, issuing the following command would build the client jar for the 2.8.0 version.
 
 ```console
 $ mvn -T 4C clean install -Dmaven.javadoc.skip=true -DskipTests \
@@ -220,13 +221,13 @@ $ mvn -T 4C clean install -Dmaven.javadoc.skip=true -DskipTests \
 ```
 
 #### Using Mount Command-line
-When using the mount Alluxio shell command, one can pass through the mount option `alluxio.underfs.version` to specify which version of HDFS to mount. If no such a version is specified, by default Alluxio treats it as Apache HDFS 2.2.
+When using the mount Alluxio shell command, one can pass through the mount option `alluxio.underfs.version` to specify which version of HDFS to mount. If no such a version is specified, by default Alluxio treats it as Apache HDFS 2.7.
 
-For example, the following commands mount two HDFS deployments—one is HDFS 1.2 and the other is 2.7—into Alluxio namespace under directory `/mnt/hdfs12` and `/mnt/hdfs27`.
+For example, the following commands mount two HDFS deployments—one is HDFS 2.2 and the other is 2.7—into Alluxio namespace under directory `/mnt/hdfs12` and `/mnt/hdfs27`.
 
 ```console
 $ ./bin/alluxio fs mount \
-  --option alluxio.underfs.version=1.2 \
+  --option alluxio.underfs.version=2.2 \
   /mnt/hdfs12 hdfs://namenode1:8020/
 $ ./bin/alluxio fs mount \
   --option alluxio.underfs.version=2.7 \
@@ -240,14 +241,27 @@ following line to the site properties file (`conf/alluxio-site.properties`)
 
 ```
 alluxio.master.mount.table.root.ufs=hdfs://namenode1:8020
-alluxio.master.mount.table.root.option.alluxio.underfs.version=1.2
+alluxio.master.mount.table.root.option.alluxio.underfs.version=2.2
 ```
 
 #### Supported HDFS Versions
 
-Alluxio v{{site.ALLUXIO_RELEASED_VERSION}} supports the following versions of HDFS as a valid argument of mount option `alluxio.underfs.version`:
+Alluxio supports the following versions of HDFS as a valid argument of mount option `alluxio.underfs.version`:
 
-- Apache Hadoop: 1.0, 1.2, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1
+- Apache Hadoop: 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.3
+
+Note: Apache Hadoop 1.0 and 1.2 are still supported, but not included in the default download.
+To build this module yourself, build the shaded hadoop client and then the UFS model as demonstrated
+in the example below for hadoop-1.2.0.
+This will provide a jar that should be moved to the `lib/` directory in the Alluxio install directory.
+
+```console
+cd shaded/hadoop/
+mvn -T 4C -am clean install -Dmaven.javadoc.skip=true -DskipTests -Dlicense.skip=true -Dcheckstyle.skip=true -Dfindbugs.skip=true -Pmesos -Pufs-hadoop-1 -Dufs.hadoop.version=1.2.0
+cd ../../underfs/hdfs/
+mvn -T 4C -am clean install -Dmaven.javadoc.skip=true -DskipTests -Dlicense.skip=true -Dcheckstyle.skip=true -Dfindbugs.skip=true -Pmesos -Pufs-hadoop-1 -Dufs.hadoop.version=1.2.0
+
+```
 
 ### Use Hadoop Native Library
 

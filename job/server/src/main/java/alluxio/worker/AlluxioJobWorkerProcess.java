@@ -17,6 +17,7 @@ import alluxio.conf.ServerConfiguration;
 import alluxio.conf.PropertyKey;
 import alluxio.RuntimeConstants;
 import alluxio.grpc.GrpcServer;
+import alluxio.grpc.GrpcServerAddress;
 import alluxio.grpc.GrpcServerBuilder;
 import alluxio.grpc.GrpcService;
 import alluxio.metrics.MetricsSystem;
@@ -205,8 +206,8 @@ public final class AlluxioJobWorkerProcess implements JobWorkerProcess {
 
       LOG.info("Starting gRPC server on address {}", mRpcConnectAddress);
       GrpcServerBuilder serverBuilder = GrpcServerBuilder.forAddress(
-          mRpcConnectAddress.getHostName(), mRpcBindAddress, ServerConfiguration.global(),
-          ServerUserState.global());
+          GrpcServerAddress.create(mRpcConnectAddress.getHostName(), mRpcBindAddress),
+          ServerConfiguration.global(), ServerUserState.global());
 
       for (Map.Entry<alluxio.grpc.ServiceType, GrpcService> serviceEntry : mJobWorker.getServices()
           .entrySet()) {
@@ -242,6 +243,8 @@ public final class AlluxioJobWorkerProcess implements JobWorkerProcess {
     return new WorkerNetAddress()
         .setHost(NetworkAddressUtils.getConnectHost(ServiceType.JOB_WORKER_RPC,
             ServerConfiguration.global()))
+        .setContainerHost(ServerConfiguration.global()
+            .getOrDefault(PropertyKey.WORKER_CONTAINER_HOSTNAME, ""))
         .setRpcPort(ServerConfiguration.getInt(PropertyKey.JOB_WORKER_RPC_PORT))
         .setDataPort(ServerConfiguration.getInt(PropertyKey.JOB_WORKER_DATA_PORT))
         .setWebPort(ServerConfiguration.getInt(PropertyKey.JOB_WORKER_WEB_PORT));

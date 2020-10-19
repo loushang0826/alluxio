@@ -341,6 +341,7 @@ public class InodeTreePersistentState implements Journaled {
     mPinnedInodeFileIds.remove(id);
     mReplicationLimitedFileIds.remove(id);
     mToBePersistedIds.remove(id);
+    mTtlBuckets.remove(inode);
   }
 
   private void applyCreateDirectory(InodeDirectoryEntry entry) {
@@ -647,8 +648,18 @@ public class InodeTreePersistentState implements Journaled {
     Preconditions.checkState(!entry.hasNewParentId(),
         "old-style rename entries should not have the newParentId field set");
     Path path = Paths.get(entry.getDstPath());
+    Path parent = path.getParent();
+    Path filename = path.getFileName();
+    if (parent == null) {
+      throw new NullPointerException("path parent cannot be null");
+    }
+    if (filename == null) {
+      throw new NullPointerException("path filename cannot be null");
+    }
+
     return RenameEntry.newBuilder().setId(entry.getId())
-        .setNewParentId(getIdFromPath(path.getParent())).setNewName(path.getFileName().toString())
+        .setNewParentId(getIdFromPath(parent))
+        .setNewName(filename.toString())
         .setOpTimeMs(entry.getOpTimeMs()).build();
   }
 

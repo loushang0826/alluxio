@@ -16,8 +16,8 @@ import alluxio.WorkerStorageTierAssoc;
 import alluxio.conf.PropertyKey;
 import alluxio.conf.ServerConfiguration;
 import alluxio.grpc.WriteResponse;
+import alluxio.metrics.MetricKey;
 import alluxio.metrics.MetricsSystem;
-import alluxio.metrics.WorkerMetrics;
 import alluxio.network.protocol.databuffer.DataBuffer;
 import alluxio.security.authentication.AuthenticatedUserInfo;
 import alluxio.worker.block.BlockWorker;
@@ -69,17 +69,23 @@ public final class BlockWriteHandler extends AbstractWriteHandler<BlockWriteRequ
   @Override
   protected BlockWriteRequestContext createRequestContext(alluxio.grpc.WriteRequest msg)
       throws Exception {
-    BlockWriteRequestContext context = new BlockWriteRequestContext(msg, FILE_BUFFER_SIZE);
+    long bytesToReserve = FILE_BUFFER_SIZE;
+    if (msg.getCommand().hasSpaceToReserve()) {
+      bytesToReserve = msg.getCommand().getSpaceToReserve();
+    }
+    BlockWriteRequestContext context = new BlockWriteRequestContext(msg, bytesToReserve);
     BlockWriteRequest request = context.getRequest();
     mWorker.createBlockRemote(request.getSessionId(), request.getId(),
         mStorageTierAssoc.getAlias(request.getTier()),
-        request.getMediumType(), FILE_BUFFER_SIZE);
+        request.getMediumType(), bytesToReserve);
     if (mDomainSocketEnabled) {
-      context.setCounter(MetricsSystem.counter(WorkerMetrics.BYTES_WRITTEN_DOMAIN));
-      context.setMeter(MetricsSystem.meter(WorkerMetrics.BYTES_WRITTEN_DOMAIN_THROUGHPUT));
+      context.setCounter(MetricsSystem.counter(MetricKey.WORKER_BYTES_WRITTEN_DOMAIN.getName()));
+      context.setMeter(MetricsSystem.meter(
+          MetricKey.WORKER_BYTES_WRITTEN_DOMAIN_THROUGHPUT.getName()));
     } else {
-      context.setCounter(MetricsSystem.counter(WorkerMetrics.BYTES_WRITTEN_ALLUXIO));
-      context.setMeter(MetricsSystem.meter(WorkerMetrics.BYTES_WRITTEN_ALLUXIO_THROUGHPUT));
+      context.setCounter(MetricsSystem.counter(MetricKey.WORKER_BYTES_WRITTEN_ALLUXIO.getName()));
+      context.setMeter(MetricsSystem.meter(
+          MetricKey.WORKER_BYTES_WRITTEN_ALLUXIO_THROUGHPUT.getName()));
     }
     return context;
   }
@@ -104,8 +110,10 @@ public final class BlockWriteHandler extends AbstractWriteHandler<BlockWriteRequ
 
   @Override
   protected void cleanupRequest(BlockWriteRequestContext context) throws Exception {
-    WriteRequest request = context.getRequest();
-    mWorker.cleanupSession(request.getSessionId());
+    if (context.getBlockWriter() != null) {
+      context.getBlockWriter().close();
+    }
+    mWorker.cleanupSession(context.getRequest().getSessionId());
   }
 
   @Override

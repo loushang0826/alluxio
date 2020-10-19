@@ -14,8 +14,10 @@ package alluxio;
 import alluxio.conf.PropertyKey;
 import alluxio.exception.ExceptionMessage;
 import alluxio.exception.PreconditionMessage;
+import alluxio.exception.ServiceNotFoundException;
 import alluxio.exception.status.AlluxioStatusException;
 import alluxio.exception.status.FailedPreconditionException;
+import alluxio.exception.status.NotFoundException;
 import alluxio.exception.status.UnauthenticatedException;
 import alluxio.exception.status.UnavailableException;
 import alluxio.grpc.GetServiceVersionPRequest;
@@ -24,8 +26,8 @@ import alluxio.grpc.GrpcChannelBuilder;
 import alluxio.grpc.GrpcServerAddress;
 import alluxio.grpc.ServiceType;
 import alluxio.grpc.ServiceVersionClientServiceGrpc;
-import alluxio.metrics.CommonMetrics;
 import alluxio.metrics.Metric;
+import alluxio.metrics.MetricInfo;
 import alluxio.metrics.MetricsSystem;
 import alluxio.retry.RetryPolicy;
 import alluxio.retry.RetryUtils;
@@ -33,6 +35,7 @@ import alluxio.util.SecurityUtils;
 
 import com.codahale.metrics.Timer;
 import com.google.common.base.Preconditions;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.slf4j.Logger;
@@ -56,9 +59,14 @@ public abstract class AbstractClient implements Client {
 
   protected InetSocketAddress mAddress;
 
+  /** Address to load configuration, which may differ from {@code mAddress}. */
+  protected InetSocketAddress mConfAddress;
+
   /** Underlying channel to the target service. */
   protected GrpcChannel mChannel;
 
+  @SuppressFBWarnings(value = "IS2_INCONSISTENT_SYNC",
+      justification = "the error seems a bug in findbugs")
   /** Used to query service version for the remote service type. */
   protected ServiceVersionClientServiceGrpc.ServiceVersionClientServiceBlockingStub mVersionService;
 
@@ -77,6 +85,8 @@ public abstract class AbstractClient implements Client {
   protected long mServiceVersion;
 
   protected ClientContext mContext;
+
+  private final long mRpcThreshold;
 
   /**
    * Creates a new client base.
@@ -104,6 +114,7 @@ public abstract class AbstractClient implements Client {
     mContext = Preconditions.checkNotNull(context, "context");
     mRetryPolicySupplier = retryPolicySupplier;
     mServiceVersion = Constants.UNKNOWN_SERVICE_VERSION;
+    mRpcThreshold = mContext.getClusterConf().getMs(PropertyKey.USER_LOGGING_THRESHOLD);
   }
 
   /**
@@ -112,13 +123,11 @@ public abstract class AbstractClient implements Client {
   protected abstract ServiceType getRemoteServiceType();
 
   protected long getRemoteServiceVersion() throws AlluxioStatusException {
-    return retryRPC(new RpcCallable<Long>() {
-      public Long call() {
-        return mVersionService.getServiceVersion(
+    // Calling directly as this method is subject to an encompassing retry loop.
+    return mVersionService
+        .getServiceVersion(
             GetServiceVersionPRequest.newBuilder().setServiceType(getRemoteServiceType()).build())
-            .getVersion();
-      }
-    });
+        .getVersion();
   }
 
   /**
@@ -163,7 +172,7 @@ public abstract class AbstractClient implements Client {
       throws IOException {
     // Bootstrap once for clients
     if (!isConnected()) {
-      mContext.loadConfIfNotLoaded(mAddress);
+      mContext.loadConfIfNotLoaded(mConfAddress);
     }
   }
 
@@ -205,28 +214,20 @@ public abstract class AbstractClient implements Client {
       // failover).
       try {
         mAddress = getAddress();
+        mConfAddress = getConfAddress();
       } catch (UnavailableException e) {
         LOG.debug("Failed to determine {} rpc address ({}): {}",
             getServiceName(), retryPolicy.getAttemptCount(), e.toString());
         continue;
-      }
-      if (mAddress.isUnresolved()) {
-        // Sometimes the acquired addressed wasn't resolved, retry resolving before
-        // using it to connect.
-        LOG.debug("Retry resolving address {}", mAddress);
-        // Creates a new InetSocketAddress to force resolving the hostname again.
-        mAddress = new InetSocketAddress(mAddress.getHostName(), mAddress.getPort());
-        if (mAddress.isUnresolved()) {
-          LOG.debug("Failed to resolve address on retry {}", mAddress);
-        }
       }
       try {
         beforeConnect();
         LOG.debug("Alluxio client (version {}) is trying to connect with {} @ {}",
             RuntimeConstants.VERSION, getServiceName(), mAddress);
         mChannel = GrpcChannelBuilder
-            .newBuilder(new GrpcServerAddress(mAddress), mContext.getClusterConf())
+            .newBuilder(GrpcServerAddress.create(mAddress), mContext.getClusterConf())
             .setSubject(mContext.getSubject())
+            .setClientType(getServiceName())
             .build();
         // Create stub for version service on host
         mVersionService = ServiceVersionClientServiceGrpc.newBlockingStub(mChannel);
@@ -240,6 +241,15 @@ public abstract class AbstractClient implements Client {
         LOG.debug("Failed to connect ({}) with {} @ {}: {}", retryPolicy.getAttemptCount(),
             getServiceName(), mAddress, e.getMessage());
         lastConnectFailure = e;
+        if (e instanceof UnauthenticatedException) {
+          // If there has been a failure in opening GrpcChannel, it's possible because
+          // the authentication credential has expired. Relogin.
+          mContext.getUserState().relogin();
+        }
+        if (e instanceof NotFoundException) {
+          // service is not found in the server, skip retry
+          break;
+        }
       }
     }
     // Reaching here indicates that we did not successfully connect.
@@ -259,6 +269,10 @@ public abstract class AbstractClient implements Client {
      */
     if (lastConnectFailure instanceof UnauthenticatedException) {
       throw (AlluxioStatusException) lastConnectFailure;
+    }
+    if (lastConnectFailure instanceof NotFoundException) {
+      throw new NotFoundException(lastConnectFailure.getMessage(),
+          new ServiceNotFoundException(lastConnectFailure.getMessage(), lastConnectFailure));
     }
 
     throw new UnavailableException(String.format("Failed to connect to %s @ %s after %s attempts",
@@ -302,8 +316,16 @@ public abstract class AbstractClient implements Client {
     return mAddress;
   }
 
+  @Override
+  public synchronized InetSocketAddress getConfAddress() throws UnavailableException {
+    if (mConfAddress != null) {
+      return mConfAddress;
+    }
+    return mAddress;
+  }
+
   /**
-   * The RPC to be executed in {@link #retryRPC(RpcCallable)}.
+   * The RPC to be executed in {@link #retryRPC}.
    *
    * @param <V> the return value of {@link #call()}
    */
@@ -318,40 +340,48 @@ public abstract class AbstractClient implements Client {
   }
 
   /**
-   * Tries to execute an RPC defined as a {@link RpcCallable}.
-   *
-   * If a {@link UnavailableException} occurs, a reconnection will be tried through
-   * {@link #connect()} and the action will be re-executed.
-   *
-   * @param rpc the RPC call to be executed
-   * @param <V> type of return value of the RPC call
-   * @return the return value of the RPC call
-   */
-  protected synchronized <V> V retryRPC(RpcCallable<V> rpc) throws AlluxioStatusException {
-    return retryRPCInternal(rpc, () -> null);
-  }
-
-  /**
    * Tries to execute an RPC defined as a {@link RpcCallable}. Metrics will be recorded based on
    * the provided rpc name.
    *
    * If a {@link UnavailableException} occurs, a reconnection will be tried through
    * {@link #connect()} and the action will be re-executed.
    *
-   * @param rpc the RPC call to be executed
-   * @param rpcName the human readable name of the RPC call
    * @param <V> type of return value of the RPC call
+   * @param rpc the RPC call to be executed
+   * @param logger the logger to use for this call
+   * @param rpcName the human readable name of the RPC call
+   * @param description the format string of the description, used for logging
+   * @param args the arguments for the description
    * @return the return value of the RPC call
+   * @throws AlluxioStatusException
    */
-  protected synchronized <V> V retryRPC(RpcCallable<V> rpc, String rpcName)
-      throws AlluxioStatusException {
+  protected synchronized <V> V retryRPC(RpcCallable<V> rpc, Logger logger, String rpcName,
+      String description, Object... args) throws AlluxioStatusException {
+    String debugDesc = logger.isDebugEnabled() ? String.format(description, args) : null;
+    // TODO(binfan): create RPC context so we could get RPC duration from metrics timer directly
+    long startMs = System.currentTimeMillis();
+    logger.debug("Enter: {}({})", rpcName, debugDesc);
     try (Timer.Context ctx = MetricsSystem.timer(getQualifiedMetricName(rpcName)).time()) {
-      return retryRPCInternal(rpc, () -> {
+      V ret = retryRPCInternal(rpc, () -> {
         MetricsSystem.counter(getQualifiedRetryMetricName(rpcName)).inc();
         return null;
       });
+      long duration = System.currentTimeMillis() - startMs;
+      logger.debug("Exit (OK): {}({}) in {} ms", rpcName, debugDesc, duration);
+      if (duration >= mRpcThreshold) {
+        logger.warn("{}({}) returned {} in {} ms (>={} ms)",
+            rpcName, String.format(description, args), ret, duration, mRpcThreshold);
+      }
+      return ret;
     } catch (Exception e) {
+      long duration = System.currentTimeMillis() - startMs;
       MetricsSystem.counter(getQualifiedFailureMetricName(rpcName)).inc();
+      logger.debug("Exit (ERROR): {}({}) in {} ms: {}",
+          rpcName, debugDesc, duration, e.toString());
+      if (duration >= mRpcThreshold) {
+        logger.warn("{}({}) exits with exception [{}] in {} ms (>={}ms)",
+            rpcName, String.format(description, args), e.toString(), duration, mRpcThreshold);
+      }
       throw e;
     }
   }
@@ -391,7 +421,7 @@ public abstract class AbstractClient implements Client {
     try {
       if (SecurityUtils.isAuthenticationEnabled(mContext.getClusterConf())
           && mContext.getUserState().getUser() != null) {
-        return Metric.getMetricNameWithTags(metricName, CommonMetrics.TAG_USER,
+        return Metric.getMetricNameWithTags(metricName, MetricInfo.TAG_USER,
             mContext.getUserState().getUser().getName());
       } else {
         return metricName;

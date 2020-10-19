@@ -1,6 +1,6 @@
 [![logo](docs/resources/alluxio_logo.png "Alluxio")](https://www.alluxio.io)
 
-[![Slack](https://img.shields.io/badge/slack-alluxio-blue.svg?logo=slack)](https://www.alluxio.io/slack)
+[![Slack](https://img.shields.io/badge/slack-alluxio--community-blue.svg?logo=slack)](https://www.alluxio.io/slack)
 [![Release](https://img.shields.io/github/release/alluxio/alluxio/all.svg)](https://www.alluxio.io/download)
 [![Docker Pulls](https://img.shields.io/docker/pulls/alluxio/alluxio.svg)](https://hub.docker.com/r/alluxio/alluxio)
 [![Documentation](https://img.shields.io/badge/docs-reference-blue.svg)](https://www.alluxio.io/docs)
@@ -22,19 +22,25 @@ For more details, please refer to Haoyuan Li's PhD dissertation
 ## Who Uses Alluxio
 
 Alluxio is used in production to manage Petabytes of data in many leading companies, with
-the largest deployment exceeding 1300 nodes. Find more use cases at
-[Powered by Alluxio](https://www.alluxio.io/powered-by-alluxio).
+the largest deployment exceeding 1300 nodes. You can find more use cases at
+[Powered by Alluxio](https://www.alluxio.io/powered-by-alluxio) or visit our first community conference ([Data Orchestration Summit](https://www.alluxio.io/data-orchestration-summit-2019/)) to learn from other community members!
+
+## Who Owns and Manages Alluxio Project
+
+Alluxio Open Source Foundation is the owner of Alluxio project.
+Project operation is done by Alluxio Project Management Committee (PMC).
+You can checkout more details in its structure and how to join Alluxio PMC 
+[here](https://github.com/Alluxio/alluxio/wiki/Alluxio-Project-Management-Committee-(PMC)).
 
 ## Community and Events
 Please use the following to reach members of the community:
 
-* Slack: [alluxio-community channel](https://www.alluxio.io/slack)
+* [Alluxio Community Slack Channel](https://www.alluxio.io/slack)
 * Community Events: [upcoming online office hours, meetups and webinars](https://www.alluxio.io/events)
-* Mailing List: [alluxio-users](https://groups.google.com/forum/?fromgroups#!forum/alluxio-users)
-* Meetup Groups: [Bay Area Meetup](http://www.meetup.com/Alluxio),
+* Meetup Groups: [Global Online Meetup](https://www.meetup.com/Alluxio-Global-Online-Meetup/), [Bay Area Meetup](http://www.meetup.com/Alluxio),
 [New York Meetup](https://www.meetup.com/Alluxio-Open-Source-New-York-Meetup),
-[Beijing Alluxio Meetup](https://www.meetup.com/meetup-group-iLMBZGhS/)
-* Twitter: [@alluxio](https://twitter.com/alluxio)
+[Beijing Alluxio Meetup](https://www.meetup.com/meetup-group-iLMBZGhS/), [Austin Meetup](https://www.meetup.com/Cloud-Data-Orchestration-Austin/)
+* [Alluxio Twitter](https://twitter.com/alluxio); [Alluxio Youtube Channel](https://www.youtube.com/channel/UCpibQsajhwqYPLYhke4RigA); [Alluxio Mailing List](https://groups.google.com/forum/?fromgroups#!forum/alluxio-users)
 
 ## Download Alluxio
 
@@ -58,12 +64,12 @@ $ docker run -d --net=alluxio_nw \
     -v ufs:/opt/alluxio/underFSStorage \
     alluxio/alluxio master
 # Launch the Alluxio worker
-$ export ALLUXIO_WORKER_MEMORY_SIZE=1G
+$ export ALLUXIO_WORKER_RAMDISK_SIZE=1G
 $ docker run -d --net=alluxio_nw \
-    --shm-size=${ALLUXIO_WORKER_MEMORY_SIZE} \
+    --shm-size=${ALLUXIO_WORKER_RAMDISK_SIZE} \
     --name=alluxio-worker \
     -v ufs:/opt/alluxio/underFSStorage \
-    -e ALLUXIO_JAVA_OPTS="-Dalluxio.worker.memory.size=${ALLUXIO_WORKER_MEMORY_SIZE} -Dalluxio.master.hostname=alluxio-master" \
+    -e ALLUXIO_JAVA_OPTS="-Dalluxio.worker.ramdisk.size=${ALLUXIO_WORKER_RAMDISK_SIZE} -Dalluxio.master.hostname=alluxio-master" \
     alluxio/alluxio worker
 ```
 
@@ -84,27 +90,33 @@ To report bugs, suggest improvements, or create new feature requests, please ope
 
 ## Depend on Alluxio
 
-For Alluxio versions 1.4 or earlier, use the `alluxio-core-client` artifact.
+Alluxio project provides several different client artifacts for external projects to depend on Alluxio client:
 
-For Alluxio versions 1.5 or later, Alluxio provides several different client artifacts. The Alluxio
-file system interface provided by the `alluxio-core-client-fs` artifact is recommended for the best
-performance and access to Alluxio-specific functionality. If you want to use other interfaces,
-include the appropriate client artifact. For example, `alluxio-core-client-hdfs` provides a client
-implementing HDFS's file system API.
+- Artifact `alluxio-core-client-fs` provides a client for
+  [Alluxio Java file system API](https://docs.alluxio.io/os/user/stable/en/api/FS-API.html#alluxio-java-api))
+  to access all Alluxio-specific functionalities.
+- Artifact `alluxio-core-client-hdfs` provides a client for
+  [HDFS-Compatible file system API](https://docs.alluxio.io/os/user/stable/en/api/FS-API.html#hadoop-compatible-java-client).
+- Artifact `alluxio-shaded-client`, available in Alluxio 2.0.1 or later, includes both above
+  clients and all their dependencies but in a shaded form to prevent conflicts. This client jar is
+  self-contained but the size is also much larger than the other two. This artifact is recommended
+  generally for a project to use Alluxio client.
 
-### Apache Maven
-```xml
-<dependency>
-  <groupId>org.alluxio</groupId>
-  <artifactId>alluxio-core-client-fs</artifactId>
-  <version>2.0.0</version>
-</dependency>
-```
+Here are examples to declare the dependecies on  `alluxio-shaded-client` using Maven or SBT:
 
-### SBT
-```
-libraryDependencies += "org.alluxio" % "alluxio-core-client-fs" % "2.0.0"
-```
+- Apache Maven
+  ```xml
+  <dependency>
+    <groupId>org.alluxio</groupId>
+    <artifactId>alluxio-shaded-client</artifactId>
+    <version>2.3.0</version>
+  </dependency>
+  ```
+
+- SBT
+  ```
+  libraryDependencies += "org.alluxio" % "alluxio-shaded-client" % "2.3.0"
+  ```
 
 ## Contributing
 

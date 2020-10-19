@@ -36,6 +36,7 @@ import alluxio.underfs.options.MkdirsOptions;
 import alluxio.underfs.options.OpenOptions;
 import alluxio.util.CommonUtils;
 import alluxio.util.UnderFileSystemUtils;
+import alluxio.util.network.NetworkAddressUtils;
 
 import com.google.common.base.Preconditions;
 import com.google.common.cache.CacheBuilder;
@@ -62,6 +63,7 @@ import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -361,7 +363,7 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
         Collections.addAll(ret, names);
       }
     } catch (IOException e) {
-      LOG.warn("Unable to get file location for {} : {}", path, e.getMessage());
+      LOG.debug("Unable to get file location for {} : {}", path, e.getMessage());
     }
     return ret;
   }
@@ -373,8 +375,8 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
     FileStatus fs = hdfs.getFileStatus(tPath);
     String contentHash =
         UnderFileSystemUtils.approximateContentHash(fs.getLen(), fs.getModificationTime());
-    return new UfsFileStatus(path, contentHash, fs.getLen(),
-        fs.getModificationTime(), fs.getOwner(), fs.getGroup(), fs.getPermission().toShort());
+    return new UfsFileStatus(path, contentHash, fs.getLen(), fs.getModificationTime(),
+        fs.getOwner(), fs.getGroup(), fs.getPermission().toShort(), fs.getBlockSize());
   }
 
   @Override
@@ -425,7 +427,7 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
       String contentHash =
           UnderFileSystemUtils.approximateContentHash(fs.getLen(), fs.getModificationTime());
       return new UfsFileStatus(path, contentHash, fs.getLen(), fs.getModificationTime(),
-          fs.getOwner(), fs.getGroup(), fs.getPermission().toShort());
+          fs.getOwner(), fs.getGroup(), fs.getPermission().toShort(), fs.getBlockSize());
     }
     // Return directory status.
     return new UfsDirectoryStatus(path, fs.getOwner(), fs.getGroup(), fs.getPermission().toShort(),
@@ -461,7 +463,7 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
             .approximateContentHash(status.getLen(), status.getModificationTime());
         retStatus = new UfsFileStatus(status.getPath().getName(), contentHash, status.getLen(),
             status.getModificationTime(), status.getOwner(), status.getGroup(),
-            status.getPermission().toShort());
+            status.getPermission().toShort(), status.getBlockSize());
       } else {
         retStatus = new UfsDirectoryStatus(status.getPath().getName(), status.getOwner(),
             status.getGroup(), status.getPermission().toShort(), status.getModificationTime());
@@ -551,6 +553,29 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
     throw te;
   }
 
+  private boolean isReadLocal(FileSystem fs, Path filePath, OpenOptions options) {
+    String localHost = NetworkAddressUtils.getLocalHostName((int) mUfsConf
+        .getMs(PropertyKey.NETWORK_HOST_RESOLUTION_TIMEOUT_MS));
+    BlockLocation[] blockLocations;
+    try {
+      blockLocations = fs.getFileBlockLocations(filePath,
+          options.getOffset(), options.getLength());
+      if (blockLocations == null) {
+        // no blocks exist
+        return true;
+      }
+
+      for (BlockLocation loc : blockLocations) {
+        if (Arrays.stream(loc.getHosts()).noneMatch(localHost::equals)) {
+          return false;
+        }
+      }
+    } catch (IOException e) {
+      return true;
+    }
+    return true;
+  }
+
   @Override
   public InputStream open(String path, OpenOptions options) throws IOException {
     IOException te = null;
@@ -560,15 +585,27 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
     if (hdfs instanceof DistributedFileSystem) {
       dfs = (DistributedFileSystem) hdfs;
     }
+    Path filePath = new Path(path);
+    boolean remote = options.getPositionShort()
+        || mUfsConf.getBoolean(PropertyKey.UNDERFS_HDFS_REMOTE)
+        || !isReadLocal(hdfs, filePath, options);
     while (retryPolicy.attempt()) {
       try {
-        FSDataInputStream inputStream = hdfs.open(new Path(path));
+        FSDataInputStream inputStream = hdfs.open(filePath);
+        if (remote) {
+          LOG.debug("Using pread API to HDFS");
+          // pread API instead of seek is more efficient for FSDataInputStream.
+          // A seek on FSDataInputStream uses a skip op which is implemented as read + discard
+          // and hence ends up reading extra data from the datanode.
+          return new HdfsPositionedUnderFileInputStream(inputStream, options.getOffset());
+        }
         try {
           inputStream.seek(options.getOffset());
         } catch (IOException e) {
           inputStream.close();
           throw e;
         }
+        LOG.debug("Using original API to HDFS");
         return new HdfsUnderFileInputStream(inputStream);
       } catch (IOException e) {
         LOG.warn("{} try to open {} : {}", retryPolicy.getAttemptCount(), path, e.getMessage());
@@ -584,7 +621,7 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
               LOG.warn("HDFS recoverLease-1 success for: {}", path);
             } else {
               // try one more time, after waiting
-              CommonUtils.sleepMs(5 * Constants.SECOND_MS);
+              CommonUtils.sleepMs(5L * Constants.SECOND_MS);
               if (dfs.recoverLease(new Path(path))) {
                 LOG.warn("HDFS recoverLease-2 success for: {}", path);
               } else {
@@ -633,7 +670,7 @@ public class HdfsUnderFileSystem extends ConsistentUnderFileSystem
       LOG.warn("Failed to set owner for {} with user: {}, group: {}", path, user, group);
       LOG.debug("Exception : ", e);
       LOG.warn("In order for Alluxio to modify ownership of local files, "
-          + "Alluxio should be the local file system superuser.");
+          + "Alluxio should be running as an HDFS superuser.");
       if (!Boolean.valueOf(mUfsConf.get(PropertyKey.UNDERFS_ALLOW_SET_OWNER_FAILURE))) {
         throw e;
       } else {

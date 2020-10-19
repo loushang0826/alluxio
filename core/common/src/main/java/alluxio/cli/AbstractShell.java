@@ -16,8 +16,8 @@ import alluxio.exception.status.InvalidArgumentException;
 
 import com.google.common.io.Closer;
 import org.apache.commons.cli.CommandLine;
-import org.apache.commons.lang.ArrayUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.ArrayUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,6 +61,8 @@ public abstract class AbstractShell implements Closeable {
     mUnstableAlias = unstableAlias;
     mCommandAlias = commandAlias;
     mCommands = loadCommands();
+    // Register all loaded commands under closer.
+    mCommands.values().stream().forEach((cmd) -> mCloser.register(cmd));
   }
 
   /**
@@ -102,27 +104,28 @@ public abstract class AbstractShell implements Closeable {
       }
     }
 
+    // Find the inner-most command and its argument line.
     CommandLine cmdline;
     try {
-      String[] args;
-      if (command.hasSubCommand()) {
-        if (argv.length < 2) {
+      String[] currArgs = Arrays.copyOf(argv, argv.length);
+      while (command.hasSubCommand()) {
+        if (currArgs.length < 2) {
           throw new InvalidArgumentException("No sub-command is specified");
         }
-        if (!command.getSubCommands().containsKey(argv[1])) {
-          throw new InvalidArgumentException("Unknown sub-command: " + argv[1]);
+        if (!command.getSubCommands().containsKey(currArgs[1])) {
+          throw new InvalidArgumentException("Unknown sub-command: " + currArgs[1]);
         }
-        command = command.getSubCommands().get(argv[1]);
-        if (argv.length > 2) {
-          args = Arrays.copyOfRange(argv, 2, argv.length);
-        } else {
-          args = new String[]{};
+        command = command.getSubCommands().get(currArgs[1]);
+        if (currArgs.length >= 2) {
+          currArgs = Arrays.copyOfRange(currArgs, 1, currArgs.length);
         }
-      } else {
-        args = Arrays.copyOfRange(argv, 1, argv.length);
       }
-      cmdline = command.parseAndValidateArgs(args);
+      currArgs = Arrays.copyOfRange(currArgs, 1, currArgs.length);
+
+      cmdline = command.parseAndValidateArgs(currArgs);
     } catch (InvalidArgumentException e) {
+      // It outputs a prompt message when passing wrong args to CLI
+      System.out.println(e.getMessage());
       System.out.println("Usage: " + command.getUsage());
       System.out.println(command.getDescription());
       LOG.error("Invalid arguments for command {}:", command.getCommandName(), e);

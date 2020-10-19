@@ -91,14 +91,27 @@ public final class UfsJournalCheckpointThread extends Thread {
    */
   public UfsJournalCheckpointThread(Master master, UfsJournal journal,
       Supplier<Set<JournalSink>> journalSinks) {
+    this(master, journal, 0L, journalSinks);
+  }
+
+  /**
+   * Creates a new instance of {@link UfsJournalCheckpointThread}.
+   *
+   * @param master the master to apply the journal entries to
+   * @param journal the journal
+   * @param startSequence the journal start sequence
+   * @param journalSinks a supplier for journal sinks
+   */
+  public UfsJournalCheckpointThread(Master master, UfsJournal journal, long startSequence,
+      Supplier<Set<JournalSink>> journalSinks) {
     mMaster = Preconditions.checkNotNull(master, "master");
     mJournal = Preconditions.checkNotNull(journal, "journal");
     mShutdownQuietWaitTimeMs = journal.getQuietPeriodMs();
     mJournalCheckpointSleepTimeMs =
         (int) ServerConfiguration.getMs(PropertyKey.MASTER_JOURNAL_TAILER_SLEEP_TIME_MS);
-    mJournalReader = new UfsJournalReader(mJournal, 0, false);
-    mCheckpointPeriodEntries = ServerConfiguration.getLong(
-        PropertyKey.MASTER_JOURNAL_CHECKPOINT_PERIOD_ENTRIES);
+    mJournalReader = new UfsJournalReader(mJournal, startSequence, false);
+    mCheckpointPeriodEntries =
+        ServerConfiguration.getLong(PropertyKey.MASTER_JOURNAL_CHECKPOINT_PERIOD_ENTRIES);
     mJournalSinks = journalSinks;
   }
 
@@ -175,8 +188,13 @@ public final class UfsJournalCheckpointThread extends Thread {
           case LOG:
             entry = mJournalReader.getEntry();
             try {
-              mMaster.processJournalEntry(entry);
-              JournalUtils.sinkAppend(mJournalSinks, entry);
+              if (!mMaster.processJournalEntry(entry)) {
+                JournalUtils
+                    .handleJournalReplayFailure(LOG, null, "%s: Unrecognized journal entry: %s",
+                        mMaster.getName(), entry);
+              } else {
+                JournalUtils.sinkAppend(mJournalSinks, entry);
+              }
             } catch (Throwable t) {
               JournalUtils.handleJournalReplayFailure(LOG, t,
                   "%s: Failed to read or process journal entry %s.", mMaster.getName(), entry);
@@ -268,6 +286,9 @@ public final class UfsJournalCheckpointThread extends Thread {
       try {
         synchronized (mCheckpointingLock) {
           if (mShutdownInitiated) {
+            // This checkpoint thread is signaled to shutdown, so any checkpoint in progress must be
+            // canceled/invalidated.
+            journalWriter.cancel();
             return;
           }
           mCheckpointing = true;

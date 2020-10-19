@@ -49,8 +49,11 @@ public abstract class BaseUserState implements UserState {
     try {
       tryLogin();
     } catch (UnauthenticatedException e) {
-      // ignore
-      LOG.warn("Subject login failed: {}", e.getMessage());
+      if (!LOG.isDebugEnabled()) {
+        LOG.warn("Subject login failed from {}: {}", this.getClass().getName(), e.getMessage());
+      } else {
+        LOG.error(String.format("Subject login failed from %s: ", this.getClass().getName()), e);
+      }
     }
     return mSubject;
   }
@@ -101,6 +104,11 @@ public abstract class BaseUserState implements UserState {
     if (this == o) {
       return true;
     }
+
+    if (o == null) {
+      return false;
+    }
+
     if (this.getClass() != o.getClass()) {
       return false;
     }

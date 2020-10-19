@@ -43,7 +43,7 @@ public final class FileOutStreamIntegrationTest extends AbstractFileOutStreamInt
   // TODO(binfan): Run tests with local writes enabled and disabled.
 
   @Parameters
-  public static Object[] data() {
+  public static Object[] dataFileInStreamIntegrationTest() {
     return new Object[] {
         WriteType.ASYNC_THROUGH,
         WriteType.CACHE_THROUGH,
@@ -194,6 +194,8 @@ public final class FileOutStreamIntegrationTest extends AbstractFileOutStreamInt
    * Tests canceling after multiple blocks have been written correctly cleans up temporary worker
    * resources.
    */
+  @LocalAlluxioClusterResource.Config(
+      confParams = {PropertyKey.Name.MASTER_LOST_WORKER_FILE_DETECTION_INTERVAL, "250ms"})
   @Test
   public void cancelWrite() throws Exception {
     AlluxioURI path = new AlluxioURI(PathUtils.uniqPath());
@@ -202,7 +204,8 @@ public final class FileOutStreamIntegrationTest extends AbstractFileOutStreamInt
       os.write(BufferUtils.getIncreasingByteArray(0, BLOCK_SIZE_BYTES * 3 + 1));
       os.cancel();
     }
-    long gracePeriod = ServerConfiguration.getMs(PropertyKey.MASTER_WORKER_HEARTBEAT_INTERVAL) * 2;
+    long gracePeriod = ServerConfiguration
+        .getMs(PropertyKey.MASTER_LOST_WORKER_FILE_DETECTION_INTERVAL) * 2;
     CommonUtils.sleepMs(gracePeriod);
     List<WorkerInfo> workers =
         mLocalAlluxioClusterResource.get().getLocalAlluxioMaster().getMasterProcess()

@@ -37,6 +37,8 @@ public class PortCoordination {
   public static final List<ReservedPort> EMBEDDED_JOURNAL_RESTART = allocate(3, 0);
   public static final List<ReservedPort> EMBEDDED_JOURNAL_RESTART_STRESS = allocate(3, 0);
   public static final List<ReservedPort> EMBEDDED_JOURNAL_RESIZE = allocate(5, 0);
+  public static final List<ReservedPort> EMBEDDED_JOURNAL_GROW = allocate(2, 0);
+  public static final List<ReservedPort> EMBEDDED_JOURNAL_GROW_NEWMASTER = allocate(1, 0);
 
   public static final List<ReservedPort> JOURNAL_MIGRATION = allocate(3, 1);
 
@@ -56,8 +58,16 @@ public class PortCoordination {
 
   public static final List<ReservedPort> BACKUP_RESTORE_ZK = allocate(3, 1);
   public static final List<ReservedPort> BACKUP_RESTORE_SINGLE = allocate(1, 1);
+  public static final List<ReservedPort> BACKUP_DELEGATION_PROTOCOL = allocate(3, 1);
+  public static final List<ReservedPort> BACKUP_DELEGATION_FAILOVER_PROTOCOL = allocate(2, 1);
+  public static final List<ReservedPort> BACKUP_DELEGATION_ZK = allocate(2, 1);
+  public static final List<ReservedPort> BACKUP_DELEGATION_EMBEDDED = allocate(2, 1);
+  public static final List<ReservedPort> BACKUP_RESTORE_METASSTORE_HEAP = allocate(1, 1);
+  public static final List<ReservedPort> BACKUP_RESTORE_METASSTORE_ROCKS = allocate(1, 1);
 
   public static final List<ReservedPort> ZOOKEEPER_FAILURE = allocate(2, 1);
+  public static final List<ReservedPort> ZOOKEEPER_CONNECTION_POLICY_STANDARD = allocate(2, 0);
+  public static final List<ReservedPort> ZOOKEEPER_CONNECTION_POLICY_SESSION = allocate(2, 0);
 
   public static final List<ReservedPort> CHECKPOINT = allocate(2, 0);
 

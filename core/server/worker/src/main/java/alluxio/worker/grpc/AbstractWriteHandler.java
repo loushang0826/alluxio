@@ -106,7 +106,14 @@ abstract class AbstractWriteHandler<T extends WriteRequestContext<?>> {
       try {
         if (mContext == null) {
           LOG.debug("Received write request {}.", writeRequest);
-          mContext = createRequestContext(writeRequest);
+          try {
+            mContext = createRequestContext(writeRequest);
+          } catch (Exception e) {
+            // abort() assumes context is initialized.
+            // Reply with the error in order to prevent clients getting stuck.
+            replyError(new Error(AlluxioStatusException.fromThrowable(e), true));
+            throw e;
+          }
         } else {
           Preconditions.checkState(!mContext.isDoneUnsafe(),
               "invalid request after write request is completed.");
@@ -293,9 +300,10 @@ abstract class AbstractWriteHandler<T extends WriteRequestContext<?>> {
       }
       mContext.setError(error);
       cleanupRequest(mContext);
-      replyError();
     } catch (Exception e) {
       LOG.warn("Failed to cleanup states with error {}.", e.getMessage());
+    } finally {
+      replyError();
     }
   }
 
@@ -373,7 +381,13 @@ abstract class AbstractWriteHandler<T extends WriteRequestContext<?>> {
    * Writes an error response.
    */
   private void replyError() {
-    Error error = Preconditions.checkNotNull(mContext.getError());
+    replyError(Preconditions.checkNotNull(mContext.getError()));
+  }
+
+  /**
+   * Writes an error response.
+   */
+  private void replyError(Error error) {
     if (error.isNotifyClient()) {
       mResponseObserver.onError(error.getCause().toGrpcStatusException());
     }

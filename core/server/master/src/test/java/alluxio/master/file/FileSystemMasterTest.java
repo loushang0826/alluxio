@@ -28,6 +28,7 @@ import alluxio.AuthenticatedClientUserResource;
 import alluxio.AuthenticatedUserRule;
 import alluxio.ConfigurationRule;
 import alluxio.Constants;
+import alluxio.client.WriteType;
 import alluxio.conf.PropertyKey;
 import alluxio.conf.ServerConfiguration;
 import alluxio.exception.AccessControlException;
@@ -55,6 +56,7 @@ import alluxio.grpc.SetAclAction;
 import alluxio.grpc.SetAclPOptions;
 import alluxio.grpc.SetAttributePOptions;
 import alluxio.grpc.StorageList;
+import alluxio.grpc.WritePType;
 import alluxio.heartbeat.HeartbeatContext;
 import alluxio.heartbeat.HeartbeatScheduler;
 import alluxio.heartbeat.ManuallyScheduleHeartbeat;
@@ -213,7 +215,9 @@ public final class FileSystemMasterTest {
     // doesn't exist by default (helps loadRootTest).
     mUnderFS = ServerConfiguration.get(PropertyKey.MASTER_MOUNT_TABLE_ROOT_UFS);
     mNestedFileContext = CreateFileContext.mergeFrom(
-        CreateFilePOptions.newBuilder().setBlockSizeBytes(Constants.KB).setRecursive(true));
+        CreateFilePOptions.newBuilder().setBlockSizeBytes(Constants.KB)
+            .setWriteType(WritePType.MUST_CACHE)
+            .setRecursive(true));
     mJournalFolder = mTestFolder.newFolder().getAbsolutePath();
     startServices();
   }
@@ -224,6 +228,7 @@ public final class FileSystemMasterTest {
   @After
   public void after() throws Exception {
     stopServices();
+    ServerConfiguration.reset();
   }
 
   @Test
@@ -256,11 +261,11 @@ public final class FileSystemMasterTest {
     File file = mTestFolder.newFile();
     AlluxioURI path = new AlluxioURI("/test");
     mFileSystemMaster.createFile(path,
-        CreateFileContext.defaults().setPersisted(false));
+        CreateFileContext.defaults().setWriteType(WriteType.MUST_CACHE));
 
     mThrown.expect(FileAlreadyExistsException.class);
     mFileSystemMaster.createFile(path,
-        CreateFileContext.defaults().setPersisted(true));
+        CreateFileContext.defaults().setWriteType(WriteType.MUST_CACHE));
   }
 
   @Test
@@ -410,6 +415,21 @@ public final class FileSystemMasterTest {
     }
     assertEquals(IdUtils.INVALID_FILE_ID, mFileSystemMaster.getFileId(NESTED_URI));
     assertEquals(IdUtils.INVALID_FILE_ID, mFileSystemMaster.getFileId(NESTED_FILE_URI));
+  }
+
+  @Test
+  public void deleteDirRecursiveWithReadOnlyCheck() throws Exception {
+    AlluxioURI rootPath = new AlluxioURI("/mnt/");
+    mFileSystemMaster.createDirectory(rootPath, CreateDirectoryContext.defaults());
+    // Create ufs file.
+    AlluxioURI ufsMount = new AlluxioURI(mTestFolder.newFolder().getAbsolutePath());
+    Files.createDirectory(Paths.get(ufsMount.join("dir1").getPath()));
+    mFileSystemMaster.mount(new AlluxioURI("/mnt/local"), ufsMount,
+            MountContext.mergeFrom(MountPOptions.newBuilder().setReadOnly(true)));
+    mThrown.expect(AccessControlException.class);
+    // Will throw AccessControlException because /mnt/local is a readonly mount point
+    mFileSystemMaster.delete(rootPath,
+            DeleteContext.mergeFrom(DeletePOptions.newBuilder().setRecursive(true)));
   }
 
   @Test
@@ -2045,8 +2065,9 @@ public final class FileSystemMasterTest {
       mFileSystemMaster.rename(NESTED_FILE_URI, NESTED_URI, RenameContext.defaults());
       fail("Should not be able to overwrite existing file.");
     } catch (FileAlreadyExistsException e) {
-      assertEquals(ExceptionMessage.FILE_ALREADY_EXISTS.getMessage(NESTED_URI.getPath()),
-          e.getMessage());
+      assertEquals(String
+          .format("Cannot rename because destination already exists. src: %s dst: %s",
+              NESTED_FILE_URI.getPath(), NESTED_URI.getPath()), e.getMessage());
     }
 
     // move a nested file to a root file
@@ -2109,7 +2130,7 @@ public final class FileSystemMasterTest {
    */
   @Test
   public void free() throws Exception {
-    mNestedFileContext.setPersisted(true);
+    mNestedFileContext.setWriteType(WriteType.CACHE_THROUGH);
     long blockId = createFileWithSingleBlock(NESTED_FILE_URI);
     assertEquals(1, mBlockMaster.getBlockInfo(blockId).getLocations().size());
 
@@ -2143,7 +2164,7 @@ public final class FileSystemMasterTest {
    */
   @Test
   public void freePinnedFileWithoutForce() throws Exception {
-    mNestedFileContext.setPersisted(true);
+    mNestedFileContext.setWriteType(WriteType.CACHE_THROUGH);
     createFileWithSingleBlock(NESTED_FILE_URI);
     mFileSystemMaster.setAttribute(NESTED_FILE_URI,
         SetAttributeContext.mergeFrom(SetAttributePOptions.newBuilder().setPinned(true)));
@@ -2159,7 +2180,7 @@ public final class FileSystemMasterTest {
    */
   @Test
   public void freePinnedFileWithForce() throws Exception {
-    mNestedFileContext.setPersisted(true);
+    mNestedFileContext.setWriteType(WriteType.CACHE_THROUGH);
     long blockId = createFileWithSingleBlock(NESTED_FILE_URI);
     mFileSystemMaster.setAttribute(NESTED_FILE_URI,
         SetAttributeContext.mergeFrom(SetAttributePOptions.newBuilder().setPinned(true)));
@@ -2183,7 +2204,7 @@ public final class FileSystemMasterTest {
    */
   @Test
   public void freeDirNonRecursive() throws Exception {
-    mNestedFileContext.setPersisted(true);
+    mNestedFileContext.setWriteType(WriteType.CACHE_THROUGH);
     createFileWithSingleBlock(NESTED_FILE_URI);
     mThrown.expect(UnexpectedAlluxioException.class);
     mThrown.expectMessage(ExceptionMessage.CANNOT_FREE_NON_EMPTY_DIR.getMessage(NESTED_URI));
@@ -2197,7 +2218,7 @@ public final class FileSystemMasterTest {
    */
   @Test
   public void freeDir() throws Exception {
-    mNestedFileContext.setPersisted(true);
+    mNestedFileContext.setWriteType(WriteType.CACHE_THROUGH);
     long blockId = createFileWithSingleBlock(NESTED_FILE_URI);
     assertEquals(1, mBlockMaster.getBlockInfo(blockId).getLocations().size());
 
@@ -2233,7 +2254,7 @@ public final class FileSystemMasterTest {
    */
   @Test
   public void freeDirWithPinnedFileAndNotForced() throws Exception {
-    mNestedFileContext.setPersisted(true);
+    mNestedFileContext.setWriteType(WriteType.CACHE_THROUGH);
     createFileWithSingleBlock(NESTED_FILE_URI);
     mFileSystemMaster.setAttribute(NESTED_FILE_URI,
         SetAttributeContext.mergeFrom(SetAttributePOptions.newBuilder().setPinned(true)));
@@ -2251,7 +2272,7 @@ public final class FileSystemMasterTest {
    */
   @Test
   public void freeDirWithPinnedFileAndForced() throws Exception {
-    mNestedFileContext.setPersisted(true);
+    mNestedFileContext.setWriteType(WriteType.CACHE_THROUGH);
     long blockId = createFileWithSingleBlock(NESTED_FILE_URI);
     mFileSystemMaster.setAttribute(NESTED_FILE_URI,
         SetAttributeContext.mergeFrom(SetAttributePOptions.newBuilder().setPinned(true)));
@@ -2438,7 +2459,7 @@ public final class FileSystemMasterTest {
     AlluxioURI ufsURI = createTempUfsDir("ufs/hello");
     mFileSystemMaster.mount(alluxioURI, ufsURI, MountContext.defaults());
     mFileSystemMaster.createDirectory(alluxioURI.join("dir"), CreateDirectoryContext
-        .defaults().setPersisted(true));
+        .defaults().setWriteType(WriteType.CACHE_THROUGH));
     mFileSystemMaster.unmount(alluxioURI);
     // after unmount, ufs path under previous mount point should still exist
     File file = new File(ufsURI.join("dir").toString());
@@ -2467,7 +2488,7 @@ public final class FileSystemMasterTest {
     mFileSystemMaster.mount(alluxioURI, ufsURI, MountContext.defaults());
     AlluxioURI dirURI = alluxioURI.join("dir");
     mFileSystemMaster.createDirectory(dirURI, CreateDirectoryContext
-        .defaults().setPersisted(true));
+        .defaults().setWriteType(WriteType.MUST_CACHE));
     mThrown.expect(InvalidPathException.class);
     mFileSystemMaster.unmount(dirURI);
   }
@@ -2672,8 +2693,8 @@ public final class FileSystemMasterTest {
     mRegistry.add(MetricsMaster.class, mMetricsMaster);
     mMetrics = Lists.newArrayList();
     mBlockMaster = new BlockMasterFactory().create(mRegistry, masterContext);
-    mExecutorService = Executors.newFixedThreadPool(4,
-        ThreadFactoryUtils.build("DefaultFileSystemMasterTest-%d", true));
+    mExecutorService = Executors
+        .newFixedThreadPool(4, ThreadFactoryUtils.build("DefaultFileSystemMasterTest-%d", true));
     mFileSystemMaster = new DefaultFileSystemMaster(mBlockMaster, masterContext,
         ExecutorServiceFactories.constantExecutorServiceFactory(mExecutorService));
     mInodeStore = mFileSystemMaster.getInodeStore();
@@ -2687,20 +2708,20 @@ public final class FileSystemMasterTest {
         new WorkerNetAddress().setHost("localhost").setRpcPort(80).setDataPort(81).setWebPort(82));
     mBlockMaster.workerRegister(mWorkerId1, Arrays.asList("MEM", "SSD"),
         ImmutableMap.of("MEM", (long) Constants.MB, "SSD", (long) Constants.MB),
-        ImmutableMap.of("MEM", (long) Constants.KB, "SSD", (long) Constants.KB),
-        ImmutableMap.of(), new HashMap<String, StorageList>(),
-        RegisterWorkerPOptions.getDefaultInstance());
+        ImmutableMap.of("MEM", (long) Constants.KB, "SSD", (long) Constants.KB), ImmutableMap.of(),
+        new HashMap<String, StorageList>(), RegisterWorkerPOptions.getDefaultInstance());
     mWorkerId2 = mBlockMaster.getWorkerId(
         new WorkerNetAddress().setHost("remote").setRpcPort(80).setDataPort(81).setWebPort(82));
     mBlockMaster.workerRegister(mWorkerId2, Arrays.asList("MEM", "SSD"),
         ImmutableMap.of("MEM", (long) Constants.MB, "SSD", (long) Constants.MB),
-        ImmutableMap.of("MEM", (long) Constants.KB, "SSD", (long) Constants.KB),
-        ImmutableMap.of(), new HashMap<String, StorageList>(),
-        RegisterWorkerPOptions.getDefaultInstance());
+        ImmutableMap.of("MEM", (long) Constants.KB, "SSD", (long) Constants.KB), ImmutableMap.of(),
+        new HashMap<String, StorageList>(), RegisterWorkerPOptions.getDefaultInstance());
   }
 
   private void stopServices() throws Exception {
     mRegistry.stop();
     mJournalSystem.stop();
+    mFileSystemMaster.close();
+    mFileSystemMaster.stop();
   }
 }

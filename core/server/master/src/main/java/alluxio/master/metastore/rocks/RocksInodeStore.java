@@ -11,9 +11,12 @@
 
 package alluxio.master.metastore.rocks;
 
+import alluxio.conf.PropertyKey;
+import alluxio.conf.ServerConfiguration;
 import alluxio.master.file.meta.EdgeEntry;
 import alluxio.master.file.meta.Inode;
 import alluxio.master.file.meta.InodeDirectoryView;
+import alluxio.master.file.meta.InodeView;
 import alluxio.master.file.meta.MutableInode;
 import alluxio.master.journal.checkpoint.CheckpointInputStream;
 import alluxio.master.journal.checkpoint.CheckpointName;
@@ -42,6 +45,7 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -62,6 +66,7 @@ public class RocksInodeStore implements InodeStore {
   // These are fields instead of constants because they depend on the call to RocksDB.loadLibrary().
   private final WriteOptions mDisableWAL;
   private final ReadOptions mReadPrefixSameAsStart;
+  private final ReadOptions mIteratorOption;
 
   private final RocksStore mRocksStore;
 
@@ -77,6 +82,8 @@ public class RocksInodeStore implements InodeStore {
     RocksDB.loadLibrary();
     mDisableWAL = new WriteOptions().setDisableWAL(true);
     mReadPrefixSameAsStart = new ReadOptions().setPrefixSameAsStart(true);
+    mIteratorOption = new ReadOptions().setReadaheadSize(
+        ServerConfiguration.getBytes(PropertyKey.MASTER_METASTORE_ITERATOR_READAHEAD_SIZE));
     String dbPath = PathUtils.concatPath(baseDir, INODES_DB_NAME);
     String backupPath = PathUtils.concatPath(baseDir, INODES_DB_NAME + "-backup");
     ColumnFamilyOptions cfOpts = new ColumnFamilyOptions()
@@ -237,6 +244,14 @@ public class RocksInodeStore implements InodeStore {
       }
     }
     return inodes;
+  }
+
+  /**
+   * @return an iterator over stored inodes
+   */
+  public Iterator<InodeView> iterator() {
+    return RocksUtils.createIterator(db().newIterator(mInodesColumn.get(), mIteratorOption),
+        (iter) -> getMutable(Longs.fromByteArray(iter.key()), ReadOption.defaults()).get());
   }
 
   @Override

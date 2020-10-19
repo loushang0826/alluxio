@@ -15,6 +15,7 @@ import static java.util.stream.Collectors.toList;
 
 import alluxio.Constants;
 import alluxio.RuntimeConstants;
+import alluxio.cli.CommandUtils;
 import alluxio.conf.AlluxioConfiguration;
 import alluxio.conf.AlluxioProperties;
 import alluxio.conf.ConfigurationValueOptions;
@@ -40,6 +41,9 @@ import alluxio.util.network.NetworkAddressUtils;
 import alluxio.util.network.NetworkAddressUtils.ServiceType;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Splitter;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,8 +58,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Properties;
 import java.util.function.BiFunction;
+import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -71,6 +77,8 @@ public final class ConfigurationUtils {
   private static String sSourcePropertyFile = null;
 
   private static final Object DEFAULT_PROPERTIES_LOCK = new Object();
+  private static final String MASTERS = "masters";
+  private static final String WORKERS = "workers";
 
   private ConfigurationUtils() {} // prevent instantiation
 
@@ -170,7 +178,8 @@ public final class ConfigurationUtils {
   }
 
   private static List<InetSocketAddress> overridePort(List<InetSocketAddress> addrs, int port) {
-    return StreamUtils.map(addr -> new InetSocketAddress(addr.getHostString(), port), addrs);
+    return StreamUtils.map(addr -> InetSocketAddress.createUnresolved(addr.getHostString(), port),
+        addrs);
   }
 
   /**
@@ -352,7 +361,7 @@ public final class ConfigurationUtils {
    */
   public static List<ConfigProperty> getConfiguration(AlluxioConfiguration conf, Scope scope) {
     ConfigurationValueOptions useRawDisplayValue =
-        ConfigurationValueOptions.defaults().useDisplayValue(true).useRawValue(true);
+        ConfigurationValueOptions.defaults().useDisplayValue(true);
 
     List<ConfigProperty> configs = new ArrayList<>();
     List<PropertyKey> selectedKeys =
@@ -409,7 +418,12 @@ public final class ConfigurationUtils {
       // property file.
       AlluxioProperties properties = new AlluxioProperties();
       InstancedConfiguration conf = new InstancedConfiguration(properties);
-      properties.merge(System.getProperties(), Source.SYSTEM_PROPERTY);
+      // Can't directly pass System.getProperties() because it is not thread-safe
+      // This can cause a ConcurrentModificationException when merging.
+      Properties sysProps = new Properties();
+      System.getProperties().stringPropertyNames()
+          .forEach(key -> sysProps.setProperty(key, System.getProperty(key)));
+      properties.merge(sysProps, Source.SYSTEM_PROPERTY);
 
       // Step2: Load site specific properties file if not in test mode. Note that we decide
       // whether in test mode by default properties and system properties (via getBoolean).
@@ -477,14 +491,14 @@ public final class ConfigurationUtils {
     try {
       LOG.debug("Alluxio client (version {}) is trying to load configuration from meta master {}",
           RuntimeConstants.VERSION, address);
-      channel = GrpcChannelBuilder.newBuilder(new GrpcServerAddress(address), conf)
-          .disableAuthentication().build();
+      channel = GrpcChannelBuilder.newBuilder(GrpcServerAddress.create(address), conf)
+          .setClientType("ConfigurationUtils").disableAuthentication().build();
       MetaMasterConfigurationServiceGrpc.MetaMasterConfigurationServiceBlockingStub client =
           MetaMasterConfigurationServiceGrpc.newBlockingStub(channel);
       GetConfigurationPResponse response = client.getConfiguration(
           GetConfigurationPOptions.newBuilder().setRawValue(true)
               .setIgnoreClusterConf(ignoreClusterConf).setIgnorePathConf(ignorePathConf).build());
-      LOG.info("Alluxio client has loaded configuration from meta master {}", address);
+      LOG.debug("Alluxio client has loaded configuration from meta master {}", address);
       return response;
     } catch (io.grpc.StatusRuntimeException e) {
       throw new UnavailableException(String.format(
@@ -502,22 +516,24 @@ public final class ConfigurationUtils {
   }
 
   /**
-   * Loads client scope properties from the property list returned by grpc.
+   * Filters and loads properties with a certain scope from the property list returned by grpc.
+   * The given scope should only be {@link Scope#WORKER} or {@link Scope#CLIENT}.
    *
    * @param properties the property list returned by grpc
+   * @param scope the scope to filter the received property list
    * @param logMessage a function with key and value as parameter and returns debug log message
    * @return the loaded properties
    */
-  private static Properties loadClientProperties(List<ConfigProperty> properties,
-      BiFunction<PropertyKey, String, String> logMessage) {
+  private static Properties filterAndLoadProperties(List<ConfigProperty> properties,
+      Scope scope, BiFunction<PropertyKey, String, String> logMessage) {
     Properties props = new Properties();
     for (ConfigProperty property : properties) {
       String name = property.getName();
       // TODO(binfan): support propagating unsetting properties from master
       if (PropertyKey.isValid(name) && property.hasValue()) {
         PropertyKey key = PropertyKey.fromString(name);
-        if (!GrpcUtils.contains(key.getScope(), Scope.CLIENT)) {
-          // Only propagate client properties.
+        if (!GrpcUtils.contains(key.getScope(), scope)) {
+          // Only propagate properties contains the target scope
           continue;
         }
         String value = property.getValue();
@@ -529,26 +545,27 @@ public final class ConfigurationUtils {
   }
 
   /**
-   * Loads the cluster level configuration from the get configuration response, and merges it with
-   * the existing configuration.
+   * Loads the cluster level configuration from the get configuration response,
+   * filters out the configuration for certain scope, and merges it with the existing configuration.
    *
    * @param response the get configuration RPC response
    * @param conf the existing configuration
+   * @param scope the target scope
    * @return the merged configuration
    */
   public static AlluxioConfiguration getClusterConf(GetConfigurationPResponse response,
-      AlluxioConfiguration conf) {
+      AlluxioConfiguration conf, Scope scope) {
     String clientVersion = conf.get(PropertyKey.VERSION);
-    LOG.info("Alluxio client (version {}) is trying to load cluster level configurations",
-        clientVersion);
+    LOG.debug("Alluxio {} (version {}) is trying to load cluster level configurations",
+        scope, clientVersion);
     List<alluxio.grpc.ConfigProperty> clusterConfig = response.getClusterConfigsList();
-    Properties clusterProps = loadClientProperties(clusterConfig, (key, value) ->
+    Properties clusterProps = filterAndLoadProperties(clusterConfig, scope, (key, value) ->
         String.format("Loading property: %s (%s) -> %s", key, key.getScope(), value));
     // Check version.
     String clusterVersion = clusterProps.get(PropertyKey.VERSION).toString();
     if (!clientVersion.equals(clusterVersion)) {
-      LOG.warn("Alluxio client version ({}) does not match Alluxio cluster version ({})",
-          clientVersion, clusterVersion);
+      LOG.warn("Alluxio {} version ({}) does not match Alluxio cluster version ({})",
+          scope, clientVersion, clusterVersion);
       clusterProps.remove(PropertyKey.VERSION);
     }
     // Merge conf returned by master as the cluster default into conf object
@@ -557,7 +574,7 @@ public final class ConfigurationUtils {
     // Use the constructor to set cluster defaults as being loaded.
     InstancedConfiguration updatedConf = new InstancedConfiguration(props, true);
     updatedConf.validate();
-    LOG.info("Alluxio client has loaded cluster level configurations");
+    LOG.debug("Alluxio {} has loaded cluster level configurations", scope);
     return updatedConf;
   }
 
@@ -573,18 +590,91 @@ public final class ConfigurationUtils {
   public static PathConfiguration getPathConf(GetConfigurationPResponse response,
       AlluxioConfiguration clusterConf) {
     String clientVersion = clusterConf.get(PropertyKey.VERSION);
-    LOG.info("Alluxio client (version {}) is trying to load path level configurations",
+    LOG.debug("Alluxio client (version {}) is trying to load path level configurations",
         clientVersion);
     Map<String, AlluxioConfiguration> pathConfs = new HashMap<>();
     response.getPathConfigsMap().forEach((path, conf) -> {
-      Properties props = loadClientProperties(conf.getPropertiesList(),
+      Properties props = filterAndLoadProperties(conf.getPropertiesList(), Scope.CLIENT,
           (key, value) -> String.format("Loading property: %s (%s) -> %s for path %s",
               key, key.getScope(), value, path));
       AlluxioProperties properties = new AlluxioProperties();
       properties.merge(props, Source.PATH_DEFAULT);
       pathConfs.put(path, new InstancedConfiguration(properties, true));
     });
-    LOG.info("Alluxio client has loaded path level configurations");
+    LOG.debug("Alluxio client has loaded path level configurations");
     return PathConfiguration.create(pathConfs);
+  }
+
+  /**
+   * @param conf the configuration
+   * @return the alluxio scheme and authority determined by the configuration
+   */
+  public static String getSchemeAuthority(AlluxioConfiguration conf) {
+    if (conf.getBoolean(PropertyKey.ZOOKEEPER_ENABLED)) {
+      return Constants.HEADER + "zk@" + conf.get(PropertyKey.ZOOKEEPER_ADDRESS);
+    }
+    List<InetSocketAddress> addresses = getMasterRpcAddresses(conf);
+
+    if (addresses.size() > 1) {
+      return Constants.HEADER + addresses.stream().map(InetSocketAddress::toString)
+          .collect(Collectors.joining(","));
+    }
+
+    return Constants.HEADER + conf.get(PropertyKey.MASTER_HOSTNAME) + ":" + conf
+        .get(PropertyKey.MASTER_RPC_PORT);
+  }
+
+  /**
+   * Returns the input string as a list, splitting on a specified delimiter.
+   *
+   * @param value the value to split
+   * @param delimiter the delimiter to split the values
+   * @return the list of values for input string
+   */
+  public static List<String> parseAsList(String value, String delimiter) {
+    return Lists.newArrayList(Splitter.on(delimiter).trimResults().omitEmptyStrings()
+        .split(value));
+  }
+
+  /**
+   * Reads a list of nodes from given file name ignoring comments and empty lines.
+   * Can be used to read conf/workers or conf/masters.
+   * @param fileName name of a file that contains the list of the nodes
+   * @return list of the node names, null when file fails to read
+   */
+  @Nullable
+  private static Set<String> readNodeList(String fileName, AlluxioConfiguration conf) {
+    String confDir = conf.get(PropertyKey.CONF_DIR);
+    return CommandUtils.readNodeList(confDir, fileName);
+  }
+
+  /**
+   * Gets list of masters in conf directory.
+   *
+   * @param conf configuration
+   * @return master hostnames
+   */
+  public static Set<String> getMasterHostnames(AlluxioConfiguration conf) {
+    return readNodeList(MASTERS, conf);
+  }
+
+  /**
+   * Gets list of workers in conf directory.
+   *
+   * @param conf configuration
+   * @return workers hostnames
+   */
+  public static Set<String> getWorkerHostnames(AlluxioConfiguration conf) {
+    return readNodeList(WORKERS, conf);
+  }
+
+  /**
+   * Gets list of masters/workers in conf directory.
+   *
+   * @param conf configuration
+   * @return server hostnames
+   */
+  public static Set<String> getServerHostnames(AlluxioConfiguration conf) {
+    return Sets.union(getMasterHostnames(conf), getWorkerHostnames(conf));
   }
 }

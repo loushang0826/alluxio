@@ -12,6 +12,7 @@
 package alluxio.master.file.meta;
 
 import alluxio.AlluxioURI;
+import alluxio.client.WriteType;
 import alluxio.collections.Pair;
 import alluxio.concurrent.LockMode;
 import alluxio.conf.PropertyKey;
@@ -63,11 +64,13 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.locks.Lock;
 import java.util.function.Supplier;
 
 import javax.annotation.Nullable;
@@ -344,6 +347,37 @@ public class InodeTree implements DelegatingJournaled {
   }
 
   /**
+   * Locks existing inodes on the path and with the pattern defined by
+   * {@link LockingScheme#getPath()} and {@link LockingScheme#getPattern()}.
+   *
+   * This method uses the {@link Lock#tryLock()} method to gain ownership of the locks. The reason
+   * one might want to use this is to avoid the fairness heuristics within the
+   * {@link java.util.concurrent.locks.ReentrantReadWriteLock}'s NonFairSync which may block reader
+   * threads if a writer if the first in the queue.
+   *
+   * @param scheme the locking scheme to lock the path with
+   * @return the {@link LockedInodePath} representing the locked path of inodes
+   * @throws InvalidPathException if the path is invalid
+   */
+  public LockedInodePath tryLockInodePath(LockingScheme scheme)
+      throws InvalidPathException {
+    return lockInodePath(scheme.getPath(), scheme.getPattern(), true);
+  }
+
+  /**
+   * Locks existing inodes on the path and with the pattern defined by
+   * {@link LockingScheme#getPath()} and {@link LockingScheme#getPattern()}.
+   *
+   * @param scheme the locking scheme to lock the path with
+   * @return the {@link LockedInodePath} representing the locked path of inodes
+   * @throws InvalidPathException if the path is invalid
+   */
+  public LockedInodePath lockInodePath(LockingScheme scheme)
+      throws InvalidPathException {
+    return lockInodePath(scheme.getPath(), scheme.getPattern());
+  }
+
+  /**
    * Locks existing inodes on the specified path, in the specified {@link LockPattern}. The target
    * inode is not required to exist.
    *
@@ -354,8 +388,23 @@ public class InodeTree implements DelegatingJournaled {
    */
   public LockedInodePath lockInodePath(AlluxioURI uri, LockPattern lockPattern)
       throws InvalidPathException {
+    return lockInodePath(uri, lockPattern, false);
+  }
+
+  /**
+   * Locks existing inodes on the specified path, in the specified {@link LockPattern}. The target
+   * inode is not required to exist.
+   *
+   * @param uri the uri to lock
+   * @param lockPattern the {@link LockPattern} to lock the inodes with
+   * @param tryLock true to use {@link Lock#tryLock()} or false to use {@link Lock#lock()}
+   * @return the {@link LockedInodePath} representing the locked path of inodes
+   * @throws InvalidPathException if the path is invalid
+   */
+  public LockedInodePath lockInodePath(AlluxioURI uri, LockPattern lockPattern, boolean tryLock)
+      throws InvalidPathException {
     LockedInodePath inodePath =
-        new LockedInodePath(uri, mInodeStore, mInodeLockManager, getRoot(), lockPattern);
+        new LockedInodePath(uri, mInodeStore, mInodeLockManager, getRoot(), lockPattern, tryLock);
     try {
       inodePath.traverse();
     } catch (InvalidPathException e) {
@@ -375,6 +424,23 @@ public class InodeTree implements DelegatingJournaled {
     } catch (InvalidPathException e) {
       return false;
     }
+  }
+
+  /**
+   * Locks a path and throws an exception if the path does not exist.
+   *
+   * @param uri a uri to lock
+   * @param lockScheme the scheme to lock with
+   * @return a locked inode path for the uri
+   */
+  public LockedInodePath lockFullInodePath(AlluxioURI uri, LockingScheme lockScheme)
+      throws InvalidPathException, FileDoesNotExistException {
+    LockedInodePath inodePath = lockInodePath(uri, lockScheme.getPattern());
+    if (!inodePath.fullPathExists()) {
+      inodePath.close();
+      throw new FileDoesNotExistException(ExceptionMessage.PATH_DOES_NOT_EXIST.getMessage(uri));
+    }
+    return inodePath;
   }
 
   /**
@@ -531,7 +597,7 @@ public class InodeTree implements DelegatingJournaled {
     long id;
     long parentId;
     String name;
-    try (LockResource lr = mInodeLockManager.lockInode(inode, LockMode.READ)) {
+    try (LockResource lr = mInodeLockManager.lockInode(inode, LockMode.READ, false)) {
       id = inode.getId();
       parentId = inode.getParentId();
       name = inode.getName();
@@ -610,16 +676,22 @@ public class InodeTree implements DelegatingJournaled {
     // helper method for the shared logic.
     AlluxioURI path = inodePath.getUri();
     if (path.isRoot()) {
-      String errorMessage = ExceptionMessage.FILE_ALREADY_EXISTS.getMessage(path);
+      String errorMessage = "Not allowed to create existing root path: " + path;
       LOG.error(errorMessage);
       throw new FileAlreadyExistsException(errorMessage);
     }
     if (inodePath.fullPathExists()) {
       if (context instanceof CreateDirectoryContext
           && ((CreateDirectoryContext) context).getOptions().getAllowExists()) {
-        return new ArrayList<>();
+        return Collections.emptyList();
       } else {
-        throw new FileAlreadyExistsException(path);
+        String pathType = "file";
+        if (context instanceof CreateDirectoryContext) {
+          pathType = "directory";
+        }
+        String errorMessage = String
+            .format("Not allowed to create %s because path already exists: %s", pathType, path);
+        throw new FileAlreadyExistsException(errorMessage);
       }
     }
 
@@ -695,7 +767,7 @@ public class InodeTree implements DelegatingJournaled {
     CreateDirectoryContext missingDirContext = CreateDirectoryContext.defaults();
     missingDirContext.getOptions().setCommonOptions(FileSystemMasterCommonPOptions.newBuilder()
         .setTtl(context.getTtl()).setTtlAction(context.getTtlAction()));
-    missingDirContext.setPersisted(context.isPersisted());
+    missingDirContext.setWriteType(context.getWriteType());
     missingDirContext.setOperationTimeMs(context.getOperationTimeMs());
     missingDirContext.setMountPoint(false);
     missingDirContext.setOwner(context.getOwner());
@@ -751,8 +823,6 @@ public class InodeTree implements DelegatingJournaled {
           mDirectoryIdGenerator.getNewDirectoryId(rpcContext.getJournalContext()),
           currentInodeDirectory.getId(), name, directoryContext);
 
-      inheritOwnerAndGroupIfEmpty(newDir, currentInodeDirectory);
-
       // if the parent has default ACL, take the default ACL ANDed with the umask as the new
       // directory's default and access acl
       // When it is a metadata load operation, do not take the umask into account
@@ -785,13 +855,13 @@ public class InodeTree implements DelegatingJournaled {
           syncPersistNewDirectory(newDir);
         }
       }
+      // Do NOT call setOwner/Group after inheriting from parent if empty
+      inheritOwnerAndGroupIfEmpty(newDir, currentInodeDirectory);
       newInode = newDir;
     } else if (context instanceof CreateFileContext) {
       CreateFileContext fileContext = (CreateFileContext) context;
       MutableInodeFile newFile = MutableInodeFile.create(mContainerIdGenerator.getNewContainerId(),
           currentInodeDirectory.getId(), name, System.currentTimeMillis(), fileContext);
-
-      inheritOwnerAndGroupIfEmpty(newFile, currentInodeDirectory);
 
       // if the parent has a default ACL, copy that default ACL ANDed with the umask as the new
       // file's access ACL.
@@ -802,10 +872,15 @@ public class InodeTree implements DelegatingJournaled {
         AccessControlList acl = dAcl.generateChildFileACL(mode);
         newFile.setInternalAcl(acl);
       }
-
       if (fileContext.isCacheable()) {
         newFile.setCacheable(true);
       }
+      if (fileContext.getWriteType() == WriteType.ASYNC_THROUGH) {
+        newFile.setPersistenceState(PersistenceState.TO_BE_PERSISTED);
+      }
+
+      // Do NOT call setOwner/Group after inheriting from parent if empty
+      inheritOwnerAndGroupIfEmpty(newFile, currentInodeDirectory);
       newInode = newFile;
     } else {
       throw new IllegalStateException(String.format("Unrecognized create options: %s", context));

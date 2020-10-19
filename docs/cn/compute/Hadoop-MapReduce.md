@@ -2,8 +2,8 @@
 layout: global
 title: 在Alluxio上运行Hadoop MapReduce
 nickname: Apache Hadoop MapReduce
-group: Data Applications
-priority: 1
+group: Compute Integrations
+priority: 2
 ---
 
 * 内容列表
@@ -14,8 +14,8 @@ priority: 1
 ## 初始化设置
 
 该文档的先决条件包括：
-- 你已安装了[Java](Java-Setup.html)。
-- 你已经按照这些文档建立了一个Alluxio集群：[本地模式](Running-Alluxio-Locally.html)或[集群](Running-Alluxio-on-a-Cluster.html)。
+- 你已安装了Java。
+- 你已经按照这些文档建立了一个Alluxio集群: [本地模式]({{ '/cn/deploy/Running-Alluxio-Locally.html' | relativize_url }})或[集群模式]({{ '/cn/deploy/Running-Alluxio-on-a-Cluster.html' | relativize_url }})。
 - 为了运行一些简单的map-reduce实例，我们也推荐你下载根据你的hadoop版本对应的[map-reduce examples jar](http://mvnrepository.com/artifact/org.apache.hadoop/hadoop-mapreduce-examples/2.4.1)，或者如果你正在使用Hadoop 1，下载这个[examples jar](http://mvnrepository.com/artifact/org.apache.hadoop/hadoop-examples/1.2.1)。
 
 ## 编译Alluxio客户端
@@ -23,7 +23,7 @@ priority: 1
 为了使MapReduce应用可以与Alluxio进行通信，你需要将Alluxio Client的Jar包包含在MapReduce的classpaths中。我们建议你从Alluxio [download page](http://www.alluxio.io/download) 下载压缩包。
 
 同时，高级用户可以选择使用源代码来编译生成Alluxio Client的Jar包。
-你可以运行以下命令[here](Building-Alluxio-From-Source.html#compute-framework-support)。
+你可以运行以下命令[编译Alluxio源代码]({{ '/cn/contributor/Building-Alluxio-From-Source.html' | relativize_url }}#compute-framework-support)。
 
 新的Alluxio客户端Jar包可以在`{{site.ALLUXIO_CLIENT_JAR_PATH}}`中发现。
 
@@ -80,18 +80,6 @@ $ export HADOOP_CLASSPATH={{site.ALLUXIO_CLIENT_JAR_PATH}}:${HADOOP_CLASSPATH}
 为了在每个节点安装Alluxio,将客户端jar包`{{site.ALLUXIO_CLIENT_JAR_PATH}}`置于每个MapReduce节点的`$HADOOP_HOME/lib`（由于版本不同也可能是`$HADOOP_HOME/share/hadoop/common/lib`），然后重新启动Hadoop。
 另一种选择，在你的Hadoop部署中，把这个jar包添加到`mapreduce.application.classpath`系统属性，确保jar包在classpath上。
 为了在每个节点上安装Alluxio，将客户端Jar包`mapreduce.application.classpath`，该方法要注意的是所有Jar包必须再次安装，因为每个Jar包都更新到了最新版本。另一方面，当该Jar包已经在每个节点上的时候，就没有必要使用`-libjars`命令行选项了。
-
-## 检查MapReduce与Alluxio的集成(支持Hadoop 2.X)
-
-在Alluxio上运行MapReduce之前，你需要确认你的配置已经正确设置集成了Alluxio。MapReduce集成检查器可以帮助你确认。
-
-当你运行Hadoop集群(或单机运行)时，你可以在Alluxio项目目录运行以下命令：
-
-```console
-$ integration/checker/bin/alluxio-checker.sh mapreduce
-```
-
-你可以使用`-h`来显示关于这个命令的有用信息。这条命令将报告潜在的问题，可能会阻碍你在Alluxio上运行MapReduce。
 
 ## 在本地模式的Alluxio上运行Hadoop wordcount
 

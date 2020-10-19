@@ -11,7 +11,6 @@
 
 package alluxio.master.meta;
 
-import alluxio.AlluxioURI;
 import alluxio.ClientContext;
 import alluxio.Constants;
 import alluxio.Server;
@@ -22,10 +21,12 @@ import alluxio.conf.ConfigurationValueOptions;
 import alluxio.conf.PropertyKey;
 import alluxio.conf.ServerConfiguration;
 import alluxio.conf.Source;
+import alluxio.exception.AlluxioException;
 import alluxio.exception.ExceptionMessage;
 import alluxio.exception.status.NotFoundException;
 import alluxio.exception.status.UnavailableException;
-import alluxio.grpc.BackupPOptions;
+import alluxio.grpc.BackupPRequest;
+import alluxio.grpc.BackupStatusPRequest;
 import alluxio.grpc.GetConfigurationPOptions;
 import alluxio.grpc.GrpcService;
 import alluxio.grpc.MetaCommand;
@@ -35,30 +36,30 @@ import alluxio.grpc.ServiceType;
 import alluxio.heartbeat.HeartbeatContext;
 import alluxio.heartbeat.HeartbeatExecutor;
 import alluxio.heartbeat.HeartbeatThread;
-import alluxio.master.BackupManager;
 import alluxio.master.CoreMaster;
 import alluxio.master.CoreMasterContext;
 import alluxio.master.MasterClientContext;
+import alluxio.master.StateLockOptions;
+import alluxio.master.backup.BackupLeaderRole;
+import alluxio.master.backup.BackupRole;
+import alluxio.master.backup.BackupWorkerRole;
 import alluxio.master.block.BlockMaster;
 import alluxio.master.journal.JournalContext;
 import alluxio.master.journal.checkpoint.CheckpointName;
 import alluxio.master.meta.checkconf.ServerConfigurationChecker;
 import alluxio.master.meta.checkconf.ServerConfigurationStore;
 import alluxio.proto.journal.Journal;
+import alluxio.proto.journal.Meta;
 import alluxio.resource.LockResource;
-import alluxio.underfs.UnderFileSystem;
-import alluxio.underfs.UnderFileSystemConfiguration;
-import alluxio.underfs.options.MkdirsOptions;
+import alluxio.underfs.UfsManager;
 import alluxio.util.ConfigurationUtils;
 import alluxio.util.IdUtils;
 import alluxio.util.ThreadFactoryUtils;
-import alluxio.util.URIUtils;
 import alluxio.util.executor.ExecutorServiceFactories;
 import alluxio.util.executor.ExecutorServiceFactory;
-import alluxio.util.io.PathUtils;
 import alluxio.util.network.NetworkAddressUtils;
 import alluxio.wire.Address;
-import alluxio.wire.BackupResponse;
+import alluxio.wire.BackupStatus;
 import alluxio.wire.ConfigCheckReport;
 import alluxio.wire.ConfigHash;
 import alluxio.wire.Configuration;
@@ -68,12 +69,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.time.Clock;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -109,6 +107,9 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
         }
       };
 
+  /** Core master context. */
+  private final CoreMasterContext mCoreMasterContext;
+
   /** Handle to the block master. */
   private final BlockMaster mBlockMaster;
 
@@ -135,17 +136,85 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
       = NetworkAddressUtils.getConnectAddress(NetworkAddressUtils.ServiceType.MASTER_RPC,
       ServerConfiguration.global());
 
+  /** Indicates if newer version is available. */
+  private boolean mNewerVersionAvailable;
+
   /** The address of this master. */
   private Address mMasterAddress;
 
-  /** The root ufs. */
-  private final UnderFileSystem mUfs;
+  /** The manager of all ufs. */
+  private final UfsManager mUfsManager;
 
   /** The metadata daily backup. */
   private DailyMetadataBackup mDailyBackup;
 
   /** Path level properties. */
   private PathProperties mPathProperties;
+
+  /** Persisted state for MetaMaster. */
+  private State mState;
+
+  /** Value to be used for the cluster ID when not assigned. */
+  public static final String INVALID_CLUSTER_ID = "INVALID_CLUSTER_ID";
+
+  /** Used to manage backup role. */
+  private BackupRole mBackupRole;
+
+  /**
+   * Journaled state for MetaMaster.
+   */
+  @NotThreadSafe
+  public static final class State implements alluxio.master.journal.Journaled {
+    /** A unique ID to identify the cluster. */
+    private String mClusterID = INVALID_CLUSTER_ID;
+
+    /**
+     * @return the cluster ID
+     */
+    public String getClusterID() {
+      return mClusterID;
+    }
+
+    @Override
+    public CheckpointName getCheckpointName() {
+      return CheckpointName.CLUSTER_INFO;
+    }
+
+    @Override
+    public boolean processJournalEntry(Journal.JournalEntry entry) {
+      if (entry.hasClusterInfo()) {
+        mClusterID = entry.getClusterInfo().getClusterId();
+        return true;
+      }
+      return false;
+    }
+
+    /**
+     * @param ctx the journal context
+     * @param clusterId the clusterId journal clusterId
+     */
+    public void applyAndJournal(java.util.function.Supplier<JournalContext> ctx, String clusterId) {
+      applyAndJournal(ctx,
+          Journal.JournalEntry.newBuilder()
+              .setClusterInfo(Meta.ClusterInfoEntry.newBuilder().setClusterId(clusterId).build())
+              .build());
+    }
+
+    @Override
+    public void resetState() {
+      mClusterID = INVALID_CLUSTER_ID;
+    }
+
+    @Override
+    public Iterator<Journal.JournalEntry> getJournalEntryIterator() {
+      if (mClusterID.equals(INVALID_CLUSTER_ID)) {
+        return Collections.emptyIterator();
+      }
+      return Collections.singleton(Journal.JournalEntry.newBuilder()
+          .setClusterInfo(Meta.ClusterInfoEntry.newBuilder().setClusterId(mClusterID).build())
+          .build()).iterator();
+    }
+  }
 
   /**
    * Creates a new instance of {@link DefaultMetaMaster}.
@@ -169,6 +238,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
   DefaultMetaMaster(BlockMaster blockMaster, CoreMasterContext masterContext,
       ExecutorServiceFactory executorServiceFactory) {
     super(masterContext, new SystemClock(), executorServiceFactory);
+    mCoreMasterContext = masterContext;
     mMasterAddress =
         new Address().setHost(ServerConfiguration.getOrDefault(PropertyKey.MASTER_HOSTNAME,
             "localhost"))
@@ -178,15 +248,10 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
     mBlockMaster.registerWorkerLostListener(mWorkerConfigStore::handleNodeLost);
     mBlockMaster.registerNewWorkerConfListener(mWorkerConfigStore::registerNewConf);
 
-    if (URIUtils.isLocalFilesystem(ServerConfiguration
-        .get(PropertyKey.MASTER_MOUNT_TABLE_ROOT_UFS))) {
-      mUfs = UnderFileSystem.Factory
-          .create("/", UnderFileSystemConfiguration.defaults(ServerConfiguration.global()));
-    } else {
-      mUfs = UnderFileSystem.Factory.createForRoot(ServerConfiguration.global());
-    }
+    mUfsManager = masterContext.getUfsManager();
 
     mPathProperties = new PathProperties();
+    mState = new State();
   }
 
   @Override
@@ -198,6 +263,9 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
         new GrpcService(new MetaMasterClientServiceHandler(this)));
     services.put(ServiceType.META_MASTER_MASTER_SERVICE,
         new GrpcService(new MetaMasterMasterServiceHandler(this)));
+    // Add backup role services.
+    services.putAll(mBackupRole.getRoleServices());
+    services.putAll(mJournalSystem.getJournalServices());
     return services;
   }
 
@@ -229,15 +297,33 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
           ServerConfiguration.global(), mMasterContext.getUserState()));
       getExecutorService().submit(
           new HeartbeatThread(HeartbeatContext.MASTER_LOG_CONFIG_REPORT_SCHEDULING,
-          new LogConfigReportHeartbeatExecutor(),
-          (int) ServerConfiguration.getMs(PropertyKey.MASTER_LOG_CONFIG_REPORT_HEARTBEAT_INTERVAL),
+              new LogConfigReportHeartbeatExecutor(),
+              (int) ServerConfiguration
+                  .getMs(PropertyKey.MASTER_LOG_CONFIG_REPORT_HEARTBEAT_INTERVAL),
               ServerConfiguration.global(), mMasterContext.getUserState()));
 
       if (ServerConfiguration.getBoolean(PropertyKey.MASTER_DAILY_BACKUP_ENABLED)) {
         mDailyBackup = new DailyMetadataBackup(this, Executors.newSingleThreadScheduledExecutor(
-            ThreadFactoryUtils.build("DailyMetadataBackup-%d", true)), mUfs);
+            ThreadFactoryUtils.build("DailyMetadataBackup-%d", true)), mUfsManager);
         mDailyBackup.start();
       }
+      if (mState.getClusterID().equals(INVALID_CLUSTER_ID)) {
+        try (JournalContext context = createJournalContext()) {
+          String clusterID = java.util.UUID.randomUUID().toString();
+          mState.applyAndJournal(context, clusterID);
+          LOG.info("Created new cluster ID {}", clusterID);
+        }
+        if (ServerConfiguration.getBoolean(PropertyKey.MASTER_UPDATE_CHECK_ENABLED)
+            && !ServerConfiguration.getBoolean(PropertyKey.TEST_MODE)) {
+          getExecutorService().submit(new HeartbeatThread(HeartbeatContext.MASTER_UPDATE_CHECK,
+              new UpdateChecker(this),
+              (int) ServerConfiguration.getMs(PropertyKey.MASTER_UPDATE_CHECK_INTERVAL),
+              ServerConfiguration.global(), mMasterContext.getUserState()));
+        }
+      } else {
+        LOG.info("Detected existing cluster ID {}", mState.getClusterID());
+      }
+      mBackupRole = new BackupLeaderRole(mCoreMasterContext);
     } else {
       if (ConfigurationUtils.isHaMode(ServerConfiguration.global())) {
         // Standby master should setup MetaMasterSync to communicate with the leader master
@@ -251,6 +337,10 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
         LOG.info("Standby master with address {} starts sending heartbeat to leader master.",
             mMasterAddress);
       }
+      // Enable worker role if backup delegation is enabled.
+      if (ServerConfiguration.getBoolean(PropertyKey.MASTER_BACKUP_DELEGATION_ENABLED)) {
+        mBackupRole = new BackupWorkerRole(mCoreMasterContext);
+      }
     }
   }
 
@@ -260,66 +350,34 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
       mDailyBackup.stop();
       mDailyBackup = null;
     }
+    if (mBackupRole != null) {
+      mBackupRole.close();
+      mBackupRole = null;
+    }
     super.stop();
   }
 
   @Override
-  public BackupResponse backup(BackupPOptions options) throws IOException {
-    String dir = options.hasTargetDirectory() ? options.getTargetDirectory()
-        : ServerConfiguration.get(PropertyKey.MASTER_BACKUP_DIRECTORY);
-    UnderFileSystem ufs = mUfs;
-    if ((options.getLocalFileSystem() || !options.hasTargetDirectory())
-            && !ufs.getUnderFSType().equals("local")) {
-      ufs = UnderFileSystem.Factory.create("/",
-          UnderFileSystemConfiguration.defaults(ServerConfiguration.global()));
-      LOG.info("Backing up to local filesystem in directory {}", dir);
-    } else {
-      LOG.info("Backing up to root UFS in directory {}", dir);
-    }
-    if (!ufs.isDirectory(dir)) {
-      if (!ufs.mkdirs(dir, MkdirsOptions.defaults(ServerConfiguration.global())
-          .setCreateParent(true))) {
-        throw new IOException(String.format("Failed to create directory %s", dir));
-      }
-    }
-    String backupFilePath;
-    try (LockResource lr = new LockResource(mMasterContext.pauseStateLock())) {
-      Instant now = Instant.now();
-      String backupFileName = String.format(BackupManager.BACKUP_FILE_FORMAT,
-          DateTimeFormatter.ISO_LOCAL_DATE.withZone(ZoneId.of("UTC")).format(now),
-          now.toEpochMilli());
-      backupFilePath = PathUtils.concatPath(dir, backupFileName);
-      try {
-        try (OutputStream ufsStream = ufs.create(backupFilePath)) {
-          mBackupManager.backup(ufsStream);
-        }
-      } catch (Throwable t) {
-        try {
-          ufs.deleteExistingFile(backupFilePath);
-        } catch (Throwable t2) {
-          LOG.error("Failed to clean up failed backup at {}", backupFilePath, t2);
-          t.addSuppressed(t2);
-        }
-        throw t;
-      }
-    }
-    String rootUfs = ServerConfiguration.get(PropertyKey.MASTER_MOUNT_TABLE_ROOT_UFS);
-    if (options.getLocalFileSystem()) {
-      rootUfs = "file:///";
-    }
-    AlluxioURI backupUri = new AlluxioURI(new AlluxioURI(rootUfs), new AlluxioURI(backupFilePath));
-    return new BackupResponse(backupUri,
-        NetworkAddressUtils.getConnectHost(NetworkAddressUtils.ServiceType.MASTER_RPC,
-            ServerConfiguration.global()));
+  public BackupStatus backup(BackupPRequest request, StateLockOptions stateLockOptions)
+      throws AlluxioException {
+    return mBackupRole.backup(request, stateLockOptions);
+  }
+
+  @Override
+  public BackupStatus getBackupStatus(BackupStatusPRequest statusPRequest) throws AlluxioException {
+    return mBackupRole.getBackupStatus(statusPRequest);
   }
 
   @Override
   public String checkpoint() throws IOException {
-    try (LockResource lr = new LockResource(mMasterContext.pauseStateLock())) {
+    try (LockResource lr =
+        mMasterContext.getStateLockManager().lockExclusive(StateLockOptions.defaults())) {
       mJournalSystem.checkpoint();
+      return NetworkAddressUtils.getConnectHost(NetworkAddressUtils.ServiceType.MASTER_RPC,
+          ServerConfiguration.global());
+    } catch (Exception e) {
+      throw new IOException("Failed to take a checkpoint.", e);
     }
-    return NetworkAddressUtils.getConnectHost(NetworkAddressUtils.ServiceType.MASTER_RPC,
-        ServerConfiguration.global());
   }
 
   @Override
@@ -387,6 +445,16 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
     try (JournalContext ctx = createJournalContext()) {
       mPathProperties.removeAll(ctx, path);
     }
+  }
+
+  @Override
+  public void setNewerVersionAvailable(boolean available) {
+    mNewerVersionAvailable = available;
+  }
+
+  @Override
+  public boolean getNewerVersionAvailable() {
+    return mNewerVersionAvailable;
   }
 
   @Override
@@ -493,17 +561,24 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
   }
 
   @Override
+  public String getClusterID() {
+    return mState.getClusterID();
+  }
+
+  @Override
   public Iterator<Journal.JournalEntry> getJournalEntryIterator() {
-    return mPathProperties.getJournalEntryIterator();
+    return com.google.common.collect.Iterators.concat(mPathProperties.getJournalEntryIterator(),
+        mState.getJournalEntryIterator());
   }
 
   @Override
   public boolean processJournalEntry(Journal.JournalEntry entry) {
-    return mPathProperties.processJournalEntry(entry);
+    return mState.processJournalEntry(entry) || mPathProperties.processJournalEntry(entry);
   }
 
   @Override
   public void resetState() {
+    mState.resetState();
     mPathProperties.resetState();
   }
 

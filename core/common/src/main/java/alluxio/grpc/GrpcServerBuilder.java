@@ -19,6 +19,7 @@ import alluxio.security.authentication.DefaultAuthenticationServer;
 import alluxio.security.user.UserState;
 import alluxio.util.SecurityUtils;
 
+import com.google.common.io.Closer;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.grpc.ServerInterceptor;
 import io.grpc.ServerInterceptors;
@@ -28,7 +29,6 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
 
-import java.net.SocketAddress;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -47,56 +47,57 @@ public final class GrpcServerBuilder {
   private Set<ServiceType> mServices;
   /** Authentication server instance that will be used by this server. */
   private AuthenticationServer mAuthenticationServer;
+  /** Used to register closers that needs to be called during server shut-down. */
+  private Closer mCloser = Closer.create();
   /** Alluxio configuration.  */
   private AlluxioConfiguration mConfiguration;
 
   @SuppressFBWarnings(value = "URF_UNREAD_FIELD")
   private UserState mUserState;
 
-  private GrpcServerBuilder(String hostName, SocketAddress address,
+  private GrpcServerBuilder(GrpcServerAddress serverAddress,
       AuthenticationServer authenticationServer, AlluxioConfiguration conf, UserState userState) {
     mAuthenticationServer = authenticationServer;
-    mNettyServerBuilder = NettyServerBuilder.forAddress(address);
+    mNettyServerBuilder = NettyServerBuilder.forAddress(serverAddress.getSocketAddress());
     mServices = new HashSet<>();
     mConfiguration = conf;
     mUserState = userState;
 
     if (SecurityUtils.isAuthenticationEnabled(mConfiguration)) {
       if (mAuthenticationServer == null) {
-        mAuthenticationServer = new DefaultAuthenticationServer(hostName, mConfiguration);
+        mAuthenticationServer =
+            new DefaultAuthenticationServer(serverAddress.getHostName(), mConfiguration);
       }
-      addService(new GrpcService(mAuthenticationServer).disableAuthentication());
+      addService(new GrpcService(mAuthenticationServer).disableAuthentication()
+          .withCloseable(mAuthenticationServer));
     }
   }
 
   /**
    * Create an new instance of {@link GrpcServerBuilder} with authentication support.
    *
-   * @param hostName the host name
-   * @param address the address
+   * @param serverAddress server address
    * @param conf Alluxio configuration
    * @param userState the user state
    * @return a new instance of {@link GrpcServerBuilder}
    */
-  public static GrpcServerBuilder forAddress(String hostName, SocketAddress address,
+  public static GrpcServerBuilder forAddress(GrpcServerAddress serverAddress,
       AlluxioConfiguration conf, UserState userState) {
-    return new GrpcServerBuilder(hostName, address, null, conf, userState);
+    return new GrpcServerBuilder(serverAddress, null, conf, userState);
   }
 
   /**
    * Create an new instance of {@link GrpcServerBuilder} with authentication support.
    *
-   * @param hostName the host name
-   * @param address the address
+   * @param serverAddress server address
    * @param authenticationServer the authentication server to use
    * @param conf the Alluxio configuration
    * @param userState the user state
    * @return a new instance of {@link GrpcServerBuilder}
    */
-  public static GrpcServerBuilder forAddress(String hostName, SocketAddress address,
-      AuthenticationServer authenticationServer, AlluxioConfiguration conf,
-      UserState userState) {
-    return new GrpcServerBuilder(hostName, address, authenticationServer, conf, userState);
+  public static GrpcServerBuilder forAddress(GrpcServerAddress serverAddress,
+      AuthenticationServer authenticationServer, AlluxioConfiguration conf, UserState userState) {
+    return new GrpcServerBuilder(serverAddress, authenticationServer, conf, userState);
   }
 
   /**
@@ -228,6 +229,7 @@ public final class GrpcServerBuilder {
           new AuthenticatedUserInjector(mAuthenticationServer));
     }
     mNettyServerBuilder = mNettyServerBuilder.addService(service);
+    mCloser.register(serviceDefinition.getCloser());
     return this;
   }
 
@@ -251,7 +253,7 @@ public final class GrpcServerBuilder {
   public GrpcServer build() {
     addService(new GrpcService(new ServiceVersionClientServiceHandler(mServices))
         .disableAuthentication());
-    return new GrpcServer(mNettyServerBuilder.build(), mAuthenticationServer,
+    return new GrpcServer(mNettyServerBuilder.build(), mAuthenticationServer, mCloser,
         mConfiguration.getMs(PropertyKey.NETWORK_CONNECTION_SERVER_SHUTDOWN_TIMEOUT));
   }
 }

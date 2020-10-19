@@ -26,7 +26,7 @@ import alluxio.util.UnderFileSystemUtils;
 import alluxio.util.io.PathUtils;
 
 import com.google.common.base.Preconditions;
-import org.apache.commons.httpclient.HttpStatus;
+import org.apache.http.HttpStatus;
 import org.jets3t.service.ServiceException;
 import org.jets3t.service.StorageObjectsChunk;
 import org.jets3t.service.acl.gs.GSAccessControlList;
@@ -69,7 +69,7 @@ public class GCSUnderFileSystem extends ObjectUnderFileSystem {
 
   /** The permissions associated with the bucket. Fetched once and assumed to be immutable. */
   private final Supplier<ObjectPermissions> mPermissions
-      = UnderFileSystemUtils.memoize(this::getPermissionsInternal);
+      = CommonUtils.memoize(this::getPermissionsInternal);
 
   static {
     try {

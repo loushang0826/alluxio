@@ -20,6 +20,7 @@ import alluxio.worker.block.BlockStoreLocation;
 import alluxio.worker.block.allocator.Allocator;
 import alluxio.worker.block.meta.BlockMeta;
 import alluxio.worker.block.meta.StorageDirEvictorView;
+import alluxio.worker.block.meta.StorageDirView;
 import alluxio.worker.block.meta.StorageTierView;
 
 import com.google.common.base.Preconditions;
@@ -34,8 +35,11 @@ import javax.annotation.concurrent.NotThreadSafe;
 
 /**
  * Provides the basic implementation for every evictor.
+ *
+ * @deprecated use block annotator instead
  */
 @NotThreadSafe
+@Deprecated
 public abstract class AbstractEvictor extends AbstractBlockStoreEventListener implements Evictor {
   private static final Logger LOG = LoggerFactory.getLogger(AbstractEvictor.class);
   protected final Allocator mAllocator;
@@ -77,7 +81,7 @@ public abstract class AbstractEvictor extends AbstractBlockStoreEventListener im
     location = updateBlockStoreLocation(bytesToBeAvailable, location);
 
     // 1. If bytesToBeAvailable can already be satisfied without eviction, return the eligible
-    // StoargeDirView
+    // StorageDirView
     StorageDirEvictorView candidateDirView = (StorageDirEvictorView)
         EvictorUtils.selectDirWithRequestedSpace(bytesToBeAvailable, location, mMetadataView);
     if (candidateDirView != null) {
@@ -97,8 +101,10 @@ public abstract class AbstractEvictor extends AbstractBlockStoreEventListener im
           if (block.getBlockLocation().belongsTo(location)) {
             String tierAlias = block.getParentDir().getParentTier().getTierAlias();
             int dirIndex = block.getParentDir().getDirIndex();
-            dirCandidates.add((StorageDirEvictorView) mMetadataView.getTierView(tierAlias)
-                .getDirView(dirIndex), blockId, block.getBlockSize());
+            StorageDirView dirView = mMetadataView.getTierView(tierAlias).getDirView(dirIndex);
+            if (dirView != null) {
+              dirCandidates.add((StorageDirEvictorView) dirView, blockId, block.getBlockSize());
+            }
           }
         }
       } catch (BlockDoesNotExistException e) {
@@ -158,7 +164,7 @@ public abstract class AbstractEvictor extends AbstractBlockStoreEventListener im
             candidateDirView.markBlockMoveOut(blockId, block.getBlockSize());
             continue;
           }
-          plan.toMove().add(new BlockTransferInfo(blockId, block.getBlockLocation(),
+          plan.toMove().add(BlockTransferInfo.createMove(block.getBlockLocation(), blockId,
               nextDirView.toBlockStoreLocation()));
           candidateDirView.markBlockMoveOut(blockId, block.getBlockSize());
           nextDirView.markBlockMoveIn(blockId, block.getBlockSize());

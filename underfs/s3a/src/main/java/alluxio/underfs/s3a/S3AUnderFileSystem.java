@@ -83,7 +83,7 @@ public class S3AUnderFileSystem extends ObjectUnderFileSystem {
   private static final String DIR_HASH;
 
   /** Threshold to do multipart copy. */
-  private static final long MULTIPART_COPY_THRESHOLD = 100 * Constants.MB;
+  private static final long MULTIPART_COPY_THRESHOLD = 100L * Constants.MB;
 
   /** Default owner of objects if owner cannot be determined. */
   private static final String DEFAULT_OWNER = "";
@@ -105,7 +105,7 @@ public class S3AUnderFileSystem extends ObjectUnderFileSystem {
 
   /** The permissions associated with the bucket. Fetched once and assumed to be immutable. */
   private final Supplier<ObjectPermissions> mPermissions
-      = UnderFileSystemUtils.memoize(this::getPermissionsInternal);
+      = CommonUtils.memoize(this::getPermissionsInternal);
 
   static {
     byte[] dirByteHash = DigestUtils.md5(new byte[0]);
@@ -146,6 +146,11 @@ public class S3AUnderFileSystem extends ObjectUnderFileSystem {
     // Set the client configuration based on Alluxio configuration values.
     ClientConfiguration clientConf = new ClientConfiguration();
 
+    // Max error retry
+    if (conf.isSet(PropertyKey.UNDERFS_S3_MAX_ERROR_RETRY)) {
+      clientConf.setMaxErrorRetry(conf.getInt(PropertyKey.UNDERFS_S3_MAX_ERROR_RETRY));
+    }
+    clientConf.setConnectionTTL(conf.getMs(PropertyKey.UNDERFS_S3_CONNECT_TTL));
     // Socket timeout
     clientConf
         .setSocketTimeout((int) conf.getMs(PropertyKey.UNDERFS_S3_SOCKET_TIMEOUT));
@@ -370,7 +375,7 @@ public class S3AUnderFileSystem extends ObjectUnderFileSystem {
     // In case key is root (empty string) do not normalize prefix.
     key = key.equals(PATH_SEPARATOR) ? "" : key;
     if (mUfsConf.isSet(PropertyKey.UNDERFS_S3_LIST_OBJECTS_V1) && mUfsConf
-        .get(PropertyKey.UNDERFS_S3_LIST_OBJECTS_V1).equals(Boolean.toString(true))) {
+        .getBoolean(PropertyKey.UNDERFS_S3_LIST_OBJECTS_V1)) {
       ListObjectsRequest request =
           new ListObjectsRequest().withBucketName(mBucketName).withPrefix(key)
               .withDelimiter(delimiter).withMaxKeys(getListingChunkLength(mUfsConf));
@@ -447,7 +452,7 @@ public class S3AUnderFileSystem extends ObjectUnderFileSystem {
     @Override
     public String[] getCommonPrefixes() {
       List<String> res = mResult.getCommonPrefixes();
-      return res.toArray(new String[res.size()]);
+      return res.toArray(new String[0]);
     }
 
     @Override
@@ -491,7 +496,7 @@ public class S3AUnderFileSystem extends ObjectUnderFileSystem {
     @Override
     public String[] getCommonPrefixes() {
       List<String> res = mResult.getCommonPrefixes();
-      return res.toArray(new String[res.size()]);
+      return res.toArray(new String[0]);
     }
 
     @Override
@@ -549,9 +554,11 @@ public class S3AUnderFileSystem extends ObjectUnderFileSystem {
 
         bucketMode = S3AUtils.translateBucketAcl(acl, owner.getId());
         if (mUfsConf.isSet(PropertyKey.UNDERFS_S3_OWNER_ID_TO_USERNAME_MAPPING)) {
+          // Here accountOwner can be null if there is no mapping set for this owner id
           accountOwner = CommonUtils.getValueFromStaticMapping(
               mUfsConf.get(PropertyKey.UNDERFS_S3_OWNER_ID_TO_USERNAME_MAPPING), owner.getId());
-        } else {
+        }
+        if (accountOwner == null || accountOwner.equals(DEFAULT_OWNER)) {
           // If there is no user-defined mapping, use display name or id.
           accountOwner = owner.getDisplayName() != null ? owner.getDisplayName() : owner.getId();
         }

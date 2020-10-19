@@ -36,6 +36,7 @@ public final class MasterWebUIMetrics implements Serializable {
   private int mMasterUnderfsCapacityUsedPercentage;
   private Map<String, Counter> mRpcInvocationMetrics;
   private Map<String, Map<String, Long>> mUfsOps;
+  private Map<String, Map<String, Long>> mUfsOpsSaved;
   private Map<String, Metric> mOperationMetrics;
   private Map<String, String> mUfsReadSize;
   private Map<String, String> mUfsWriteSize;
@@ -51,6 +52,8 @@ public final class MasterWebUIMetrics implements Serializable {
   private String mTotalBytesReadDomainSocketThroughput;
   private String mTotalBytesReadUfs;
   private String mTotalBytesReadUfsThroughput;
+  private String mTotalBytesWrittenLocal;
+  private String mTotalBytesWrittenLocalThroughput;
   private String mTotalBytesWrittenAlluxio;
   private String mTotalBytesWrittenAlluxioThroughput;
   private String mTotalBytesWrittenDomainSocket;
@@ -200,6 +203,24 @@ public final class MasterWebUIMetrics implements Serializable {
   }
 
   /**
+   * Gets total bytes written local.
+   *
+   * @return the total bytes written local
+   */
+  public String getTotalBytesWrittenLocal() {
+    return mTotalBytesWrittenLocal;
+  }
+
+  /**
+   * Gets total bytes written local throughput.
+   *
+   * @return the total bytes written local throughput
+   */
+  public String getTotalBytesWrittenLocalThroughput() {
+    return mTotalBytesWrittenLocalThroughput;
+  }
+
+  /**
    * Gets total bytes written alluxio.
    *
    * @return the total bytes written alluxio
@@ -260,6 +281,15 @@ public final class MasterWebUIMetrics implements Serializable {
    */
   public Map<String, Map<String, Long>> getUfsOps() {
     return mUfsOps;
+  }
+
+  /**
+   * Gets ufs ops saved.
+   *
+   * @return the ufs ops saved
+   */
+  public Map<String, Map<String, Long>> getUfsOpsSaved() {
+    return mUfsOpsSaved;
   }
 
   /**
@@ -475,6 +505,29 @@ public final class MasterWebUIMetrics implements Serializable {
   }
 
   /**
+   * Sets total bytes written local.
+   *
+   * @param TotalBytesWrittenLocal the total bytes written local
+   * @return the updated masterWebUIMetrics object
+   */
+  public MasterWebUIMetrics setTotalBytesWrittenLocal(String TotalBytesWrittenLocal) {
+    mTotalBytesWrittenLocal = TotalBytesWrittenLocal;
+    return this;
+  }
+
+  /**
+   * Sets total bytes written local throughput.
+   *
+   * @param TotalBytesWrittenLocalThroughput the total bytes written local throughput
+   * @return the updated masterWebUIMetrics object
+   */
+  public MasterWebUIMetrics setTotalBytesWrittenLocalThroughput(
+      String TotalBytesWrittenLocalThroughput) {
+    mTotalBytesWrittenLocalThroughput = TotalBytesWrittenLocalThroughput;
+    return this;
+  }
+
+  /**
    * Sets total bytes written alluxio.
    *
    * @param TotalBytesWrittenAlluxio the total bytes written alluxio
@@ -555,6 +608,17 @@ public final class MasterWebUIMetrics implements Serializable {
   }
 
   /**
+   * Sets ufs saved ops.
+   *
+   * @param ufsOpsSavedMap the ufs ops
+   * @return the updated masterWebUIMetrics object
+   */
+  public MasterWebUIMetrics setUfsOpsSaved(Map<String, Map<String, Long>> ufsOpsSavedMap) {
+    mUfsOpsSaved = ufsOpsSavedMap;
+    return this;
+  }
+
+  /**
    * Sets ufs read size.
    *
    * @param UfsReadSize the ufs read size
@@ -615,12 +679,16 @@ public final class MasterWebUIMetrics implements Serializable {
         .add("masterCapacityUsedPercentage", mMasterCapacityUsedPercentage)
         .add("masterUnderfsCapacityFreePercentage", mMasterUnderfsCapacityFreePercentage)
         .add("masterUnderfsCapacityUsedPercentage", mMasterUnderfsCapacityUsedPercentage)
+        .add("totalBytesReadDomainSocket", mTotalBytesReadDomainSocket)
+        .add("totalBytesReadDomainSocketThroughput", mTotalBytesReadDomainSocketThroughput)
         .add("totalBytesReadLocal", mTotalBytesReadLocal)
         .add("totalBytesReadLocalThroughput", mTotalBytesReadLocalThroughput)
         .add("totalBytesReadRemote", mTotalBytesReadRemote)
         .add("totalBytesReadRemoteThroughput", mTotalBytesReadRemoteThroughput)
         .add("totalBytesReadUfs", mTotalBytesReadUfs)
         .add("totalBytesReadUfsThroughput", mTotalBytesReadUfsThroughput)
+        .add("totalBytesWrittenLocal", mTotalBytesWrittenLocal)
+        .add("totalBytesWrittenLocalThroughput", mTotalBytesWrittenLocalThroughput)
         .add("totalBytesWrittenAlluxio", mTotalBytesWrittenAlluxio)
         .add("totalBytesWrittenAlluxioThroughput", mTotalBytesWrittenAlluxioThroughput)
         .add("totalBytesWrittenUfs", mTotalBytesWrittenUfs)
